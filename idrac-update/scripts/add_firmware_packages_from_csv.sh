@@ -74,6 +74,8 @@ declare -a uploaded_objects=()
 while IFS=, read -r component version source_file target_version name transfer_protocol extra_field || [[ -n "${component:-}" ]]; do
   line_number=$((line_number + 1))
 
+  component="${component#$'\xef\xbb\xbf'}"
+
   if [[ $line_number -eq 1 ]]; then
     header="$(trim "$component"),$(trim "$version"),$(trim "$source_file"),$(trim "$target_version"),$(trim "$name"),$(trim "$transfer_protocol")"
     if [[ "$header" == "component,version,source_file,target_version,name,transfer_protocol" ]]; then
