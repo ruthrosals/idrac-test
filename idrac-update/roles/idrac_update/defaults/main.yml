@@ -1,0 +1,45 @@
+---
+# Approved component baseline for safe enterprise updates.
+# Legacy single-component variables remain supported for iDRAC only.
+
+idrac_update_mode: "check"
+
+idrac_update_approved_components:
+  - iDRAC
+  - lifecycle_controller
+  - diagnostics
+
+idrac_update_disallowed_components:
+  - bios
+  - perc
+  - nic
+
+idrac_update_items: []
+
+idrac_update_serial: 1
+idrac_update_port: 443
+idrac_update_validate_certs: false
+idrac_update_force_basic_auth: true
+idrac_update_no_log: true
+idrac_update_validate_image_uri: true
+idrac_update_image_uri_timeout: 30
+idrac_update_image_uri_status_codes:
+  - 200
+
+idrac_update_user: "{{ lookup('env', 'IDRAC_USERNAME') }}"
+idrac_update_password: "{{ lookup('env', 'IDRAC_PASSWORD') }}"
+
+idrac_update_report_enabled: true
+idrac_update_report_dir: "/var/tmp/idrac-update-reports/updates"
+idrac_update_report_latest_dir: "{{ idrac_update_report_dir }}/latest"
+idrac_update_report_archive_enabled: false
+idrac_update_report_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+idrac_update_report_archive_dir: "{{ idrac_update_report_dir }}/archive/{{ idrac_update_report_timestamp }}"
+
+idrac_report_upload_enabled: false  # noqa: var-naming[no-role-prefix]
+idrac_report_upload_provider: "wasabi"  # noqa: var-naming[no-role-prefix]
+idrac_report_bucket: ""  # noqa: var-naming[no-role-prefix]
+idrac_report_prefix: "reports"  # noqa: var-naming[no-role-prefix]
+idrac_report_s3_endpoint_url: ""  # noqa: var-naming[no-role-prefix]
+idrac_report_s3_profile: "wasabi"  # noqa: var-naming[no-role-prefix]
+idrac_report_s3_cli_path: "aws"  # noqa: var-naming[no-role-prefix]

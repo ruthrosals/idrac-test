@@ -1,0 +1,741 @@
+---
+- name: Discover available iDRAC firmware updates
+  hosts: dell_idrac
+  gather_facts: false
+  connection: local
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    idrac_port: 443
+    idrac_validate_certs: false
+    idrac_user: "{{ lookup('env', 'IDRAC_USERNAME') }}"
+    idrac_password: "{{ lookup('env', 'IDRAC_PASSWORD') }}"
+    idrac_discovery_report_enabled: true
+    idrac_discovery_report_archive_enabled: false
+    idrac_discovery_report_dir: "/var/tmp/idrac-update-reports/discovery"
+    idrac_discovery_report_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+    idrac_discovery_report_latest_dir: "{{ idrac_discovery_report_dir }}/latest"
+    idrac_discovery_report_archive_dir: "{{ idrac_discovery_report_dir }}/archive/{{ idrac_discovery_report_timestamp }}"
+    idrac_report_upload_enabled: false
+    idrac_report_upload_provider: "wasabi"
+    idrac_report_bucket: ""
+    idrac_report_prefix: "reports"
+    idrac_report_s3_endpoint_url: ""
+    idrac_report_s3_profile: "wasabi"
+    idrac_report_s3_cli_path: "aws"
+
+  pre_tasks:
+    - name: Pre-flight | Validate iDRAC connection variables
+      ansible.builtin.debug:
+        msg:
+          idrac_ip: "{{ idrac_ip }}"
+          idrac_port: "{{ idrac_port }}"
+          validate_certs: "{{ idrac_validate_certs }}"
+      when: ansible_verbosity >= 2
+
+    - name: Pre-flight | Check iDRAC Redfish is reachable
+      ansible.builtin.uri:
+        url: "https://{{ idrac_ip }}:{{ idrac_port }}/redfish/v1"
+        method: GET
+        user: "{{ idrac_user }}"
+        password: "{{ idrac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ idrac_validate_certs }}"
+        status_code: [200, 401, 403]
+        timeout: 30
+      register: idrac_reachable
+      no_log: true
+      failed_when: false
+
+    - name: Pre-flight | Report iDRAC connectivity issues
+      ansible.builtin.debug:
+        msg:
+          error: "{{ idrac_reachable.msg }}"
+          status: "{{ idrac_reachable.status | default('no response') }}"
+      when: idrac_reachable.status is not defined or idrac_reachable.status != 200
+
+    - name: Pre-flight | Fail if iDRAC unreachable
+      ansible.builtin.fail:
+        msg: >-
+          Failed to authenticate with iDRAC at https://{{ idrac_ip }}:{{ idrac_port }}/redfish/v1.
+          HTTP Status: {{ idrac_reachable.status | default('No Response') }}.
+          Error: {{ idrac_reachable.msg | default('Unknown') }}.
+      when: idrac_reachable.status is not defined or idrac_reachable.status != 200
+
+  tasks:
+    - name: Discovery | Initialize runtime variables
+      ansible.builtin.set_fact:
+        current_firmware_inventory: []
+        current_firmware_components: []
+        current_firmware_versions: {}
+        configured_firmware_targets: []
+        system_model: "UNKNOWN"
+        system_service_tag: "UNKNOWN"
+        system_power_state: "UNKNOWN"
+        idrac_manager_version: "UNKNOWN"
+        available_firmware_update_entries: []
+        discovery_component_report_rows: []
+        discovery_status: "success"
+        discovery_error: ""
+
+    - name: Discovery | Capture configured firmware targets
+      ansible.builtin.set_fact:
+        configured_firmware_targets: "{{ idrac_update_items | default([]) }}"
+
+    - name: Discovery | Get iDRAC manager information
+      ansible.builtin.uri:
+        url: "https://{{ idrac_ip }}:{{ idrac_port }}/redfish/v1/Managers/iDRAC.Embedded.1"
+        method: GET
+        user: "{{ idrac_user }}"
+        password: "{{ idrac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ idrac_validate_certs }}"
+        status_code: 200
+        timeout: 30
+      register: idrac_manager
+      no_log: true
+      failed_when: false
+
+    - name: Discovery | Check iDRAC manager query status
+      ansible.builtin.debug:
+        msg:
+          warning: "Failed to query iDRAC manager information"
+          status: "{{ idrac_manager.status | default('No Response') }}"
+          error: "{{ idrac_manager.msg | default('Unknown error') }}"
+      when: idrac_manager.status is not defined or idrac_manager.status != 200
+
+    - name: Discovery | Record manager query error
+      ansible.builtin.set_fact:
+        discovery_status: "partial"
+        discovery_error: >-
+          Failed to query iDRAC manager information.
+          Status={{ idrac_manager.status | default('No Response') }}.
+          Error={{ idrac_manager.msg | default('Unknown error') }}.
+      when: idrac_manager.status is not defined or idrac_manager.status != 200
+
+    - name: Discovery | Extract manager version if available
+      ansible.builtin.set_fact:
+        idrac_manager_version: "{{ idrac_manager.json.FirmwareVersion | default('UNKNOWN') }}"
+      when: idrac_manager.status is defined and idrac_manager.status == 200
+
+    - name: Discovery | Capture current firmware inventory
+      ansible.builtin.uri:
+        url: "https://{{ idrac_ip }}:{{ idrac_port }}/redfish/v1/UpdateService/FirmwareInventory"
+        method: GET
+        user: "{{ idrac_user }}"
+        password: "{{ idrac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ idrac_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      register: firmware_inventory
+      failed_when: false
+      no_log: true
+
+    - name: Discovery | Capture fallback manager firmware inventory
+      ansible.builtin.uri:
+        url: "https://{{ idrac_ip }}:{{ idrac_port }}/redfish/v1/Managers/iDRAC.Embedded.1/FirmwareInventory"
+        method: GET
+        user: "{{ idrac_user }}"
+        password: "{{ idrac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ idrac_validate_certs }}"
+        status_code: 200
+        timeout: 30
+      register: firmware_inventory_fallback
+      failed_when: false
+      no_log: true
+      when: firmware_inventory.status is not defined or firmware_inventory.status != 200
+
+    - name: Discovery | Use fallback manager firmware inventory
+      ansible.builtin.set_fact:
+        firmware_inventory: "{{ firmware_inventory_fallback }}"
+      when:
+        - firmware_inventory.status is not defined or firmware_inventory.status != 200
+        - firmware_inventory_fallback is defined
+        - firmware_inventory_fallback.status is defined
+        - firmware_inventory_fallback.status == 200
+
+    - name: Discovery | Check firmware inventory query status
+      ansible.builtin.debug:
+        msg:
+          warning: "Failed to query firmware inventory"
+          status: "{{ firmware_inventory.status | default('No Response') }}"
+      when: firmware_inventory.status is not defined or firmware_inventory.status != 200
+
+    - name: Discovery | Record firmware inventory query error
+      ansible.builtin.set_fact:
+        discovery_status: "partial"
+        discovery_error: >-
+          {{ discovery_error }}
+          Failed to query firmware inventory.
+          Status={{ firmware_inventory.status | default('No Response') }}.
+      when: firmware_inventory.status is not defined or firmware_inventory.status != 200
+
+    - name: Discovery | Fetch firmware inventory items
+      ansible.builtin.uri:
+        url: "https://{{ idrac_ip }}:{{ idrac_port }}{{ item['@odata.id'] }}"
+        method: GET
+        user: "{{ idrac_user }}"
+        password: "{{ idrac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ idrac_validate_certs }}"
+        status_code: 200
+        timeout: 30
+      loop: "{{ firmware_inventory.json.Members | default([]) }}"
+      loop_control:
+        label: "{{ item['@odata.id'] }}"
+      register: firmware_inventory_details
+      failed_when: false
+      no_log: true
+      when: firmware_inventory.json.Members is defined
+
+    - name: Discovery | Build current firmware inventory list
+      ansible.builtin.set_fact:
+        current_firmware_inventory: >-
+          {{
+            firmware_inventory_details.results | default([])
+            | selectattr('json', 'defined')
+            | map(attribute='json')
+            | list
+          }}
+      when: firmware_inventory_details is defined and firmware_inventory_details.results is defined
+
+    - name: Discovery | Ensure minimum firmware inventory
+      ansible.builtin.set_fact:
+        current_firmware_inventory: >-
+          {{
+            [{'name': 'iDRAC', 'id': 'iDRAC', 'version': idrac_manager_version, 'source': 'Managers/iDRAC.Embedded.1'}]
+            + (current_firmware_inventory | default([]))
+          }}
+      when: current_firmware_inventory is not defined or current_firmware_inventory | length == 0
+
+    - name: Discovery | Build current firmware component list
+      ansible.builtin.set_fact:
+        current_firmware_components: "{{ current_firmware_components | default([]) + [firmware_component] }}"
+      loop: "{{ current_firmware_inventory | default([]) }}"
+      vars:
+        firmware_component:
+          name: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) }}"
+          version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
+      when: current_firmware_inventory is defined
+
+    - name: Discovery | Initialize normalized firmware inventory
+      ansible.builtin.set_fact:
+        current_firmware_components_normalized: []
+        current_firmware_component_keys: []
+
+    - name: Discovery | Normalize and deduplicate firmware component list
+      ansible.builtin.set_fact:
+        current_firmware_components_normalized: "{{ current_firmware_components_normalized + [normalized_component] }}"
+        current_firmware_component_keys: "{{ current_firmware_component_keys + [normalized_key] }}"
+      loop: "{{ current_firmware_components | default([]) }}"
+      vars:
+        component_key: "{{ item.name | lower | regex_replace('\\s+', '_') }}"
+        normalized_key: >-
+          {{
+            'idrac' if component_key == 'integrated_dell_remote_access_controller'
+            else component_key
+          }}
+        normalized_component:
+          name: >-
+            {{
+              'iDRAC' if normalized_key == 'idrac'
+              else item.name
+            }}
+          version: >-
+            {{
+              idrac_manager_version if normalized_key == 'idrac'
+              else item.version
+            }}
+      when: normalized_key not in current_firmware_component_keys
+
+    - name: Discovery | Use normalized firmware component list
+      ansible.builtin.set_fact:
+        current_firmware_components: "{{ current_firmware_components_normalized }}"
+
+    - name: Discovery | Build current firmware version lookup
+      ansible.builtin.set_fact:
+        current_firmware_versions: >-
+          {{
+            current_firmware_versions | default({})
+            | combine(
+                (component_key in (current_firmware_versions | default({})))
+                | ternary({}, {component_key: item.version})
+              )
+          }}
+      loop: "{{ current_firmware_components | default([]) }}"
+      vars:
+        component_key: "{{ item.name | lower | regex_replace('\\s+', '_') }}"
+      when: current_firmware_components is defined
+
+    - name: Discovery | Get System information
+      ansible.builtin.uri:
+        url: "https://{{ idrac_ip }}:{{ idrac_port }}/redfish/v1/Systems/System.Embedded.1"
+        method: GET
+        user: "{{ idrac_user }}"
+        password: "{{ idrac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ idrac_validate_certs }}"
+        status_code: 200
+        timeout: 30
+      register: system_info
+      no_log: true
+      failed_when: false
+
+    - name: Discovery | Extract system details
+      ansible.builtin.set_fact:
+        system_model: "{{ system_info.json.Model | default('UNKNOWN') }}"
+        system_service_tag: "{{ system_info.json.SKU | default('UNKNOWN') }}"
+        system_power_state: "{{ system_info.json.PowerState | default('UNKNOWN') }}"
+      when: system_info.status is defined and system_info.status == 200
+
+    - name: Discovery | Get available updates from UpdateService
+      ansible.builtin.uri:
+        url: "https://{{ idrac_ip }}:{{ idrac_port }}/redfish/v1/UpdateService"
+        method: GET
+        user: "{{ idrac_user }}"
+        password: "{{ idrac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ idrac_validate_certs }}"
+        status_code: 200
+        timeout: 30
+      register: update_service
+      no_log: true
+      failed_when: false
+
+    - name: Discovery | Query available firmware updates
+      ansible.builtin.uri:
+        url: "https://{{ idrac_ip }}:{{ idrac_port }}/redfish/v1/UpdateService/AvailableFirmwareUpdates"
+        method: GET
+        user: "{{ idrac_user }}"
+        password: "{{ idrac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ idrac_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      register: available_updates
+      no_log: true
+      failed_when: false
+
+    - name: Discovery | Initialize available updates list
+      ansible.builtin.set_fact:
+        available_firmware_updates: []
+
+    - name: Discovery | Build available updates inventory
+      ansible.builtin.set_fact:
+        available_firmware_updates: >-
+          {{
+            available_updates.json.Members | default([])
+            | map(attribute='@odata.id')
+            | list
+          }}
+      when: available_updates.status == 200 and available_updates.json.Members is defined
+
+    - name: Discovery | Fetch individual available update details
+      ansible.builtin.uri:
+        url: "https://{{ idrac_ip }}:{{ idrac_port }}{{ item }}"
+        method: GET
+        user: "{{ idrac_user }}"
+        password: "{{ idrac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ idrac_validate_certs }}"
+        status_code: 200
+        timeout: 30
+      loop: "{{ available_firmware_updates }}"
+      loop_control:
+        label: "{{ item }}"
+      register: available_updates_details
+      failed_when: false
+      no_log: true
+      when: available_firmware_updates | length > 0
+
+    - name: Discovery | Parse available updates
+      ansible.builtin.set_fact:
+        parsed_available_updates: >-
+          {{
+            available_updates_details.results | default([])
+            | selectattr('json', 'defined')
+            | map(attribute='json')
+            | list
+          }}
+      when: available_updates_details is defined
+
+    - name: Discovery | Initialize available updates
+      ansible.builtin.set_fact:
+        parsed_available_updates: []
+      when: parsed_available_updates is not defined
+
+    - name: Discovery | Normalize available update report entries
+      ansible.builtin.set_fact:
+        available_firmware_update_entries: "{{ available_firmware_update_entries + [available_update_entry] }}"
+      loop: "{{ parsed_available_updates | default([]) }}"
+      loop_control:
+        label: "{{ available_update_name }}"
+      vars:
+        available_update_name: "{{ item.Name | default(item.name | default(item.Id | default(item.id | default('UNKNOWN')))) }}"
+        available_update_entry:
+          component_name: "{{ available_update_name }}"
+          normalized_name: "{{ available_update_name | lower | regex_replace('\\s+', '_') }}"
+          available_version: "{{ item.Version | default(item.version | default(item.FirmwareVersion | default(item.PackageVersion | default('UNKNOWN')))) }}"
+          reboot_required: "{{ item.RebootRequired | default(item.reboot_required | default('UNKNOWN')) }}"
+          source_catalog: >-
+            {{
+              item.Catalog | default(
+                item.CatalogName | default(
+                  item.Repository | default(
+                    item.ImageURI | default(item['@odata.id'] | default('UNKNOWN'))
+                  )
+                )
+              )
+            }}
+
+    - name: Discovery | Build component report rows
+      ansible.builtin.set_fact:
+        discovery_component_report_rows: "{{ discovery_component_report_rows + [discovery_component_report_row] }}"
+      loop: "{{ current_firmware_components | default([]) }}"
+      loop_control:
+        label: "{{ component_name }}"
+      vars:
+        component_name: "{{ item.name | default('UNKNOWN') }}"
+        component_key: "{{ component_name | lower | regex_replace('\\s+', '_') }}"
+        component_available_updates: >-
+          {{
+            available_firmware_update_entries
+            | selectattr('normalized_name', 'equalto', component_key)
+            | list
+          }}
+        discovery_component_report_row:
+          component_name: "{{ component_name }}"
+          current_version: "{{ item.version | default('UNKNOWN') }}"
+          available_version: "{{ (component_available_updates | first).available_version | default('UNKNOWN') }}"
+          reboot_required: "{{ (component_available_updates | first).reboot_required | default('UNKNOWN') }}"
+          source_catalog: "{{ (component_available_updates | first).source_catalog | default('UNKNOWN') }}"
+
+  post_tasks:
+    - name: Report | Display discovery for this host
+      ansible.builtin.debug:
+        msg:
+          hostname: "{{ inventory_hostname }}"
+          idrac_ip: "{{ idrac_ip }}"
+          model: "{{ system_model }}"
+          service_tag: "{{ system_service_tag }}"
+          power_state: "{{ system_power_state }}"
+          current_idrac_version: "{{ idrac_manager.json.FirmwareVersion | default('UNKNOWN') }}"
+          firmware_inventory:
+            - "{{ current_firmware_components | map(attribute='name') | list }}"
+          current_versions: "{{ current_firmware_versions }}"
+
+    - name: Report | Aggregate discovery data
+      ansible.builtin.set_fact:
+        host_discovery: "{{ host_discovery | default({}) | combine({inventory_hostname: host_discovery_entry}) }}"
+      vars:
+        host_discovery_entry:
+          inventory_hostname: "{{ inventory_hostname }}"
+          idrac_ip: "{{ idrac_ip }}"
+          model: "{{ system_model }}"
+          service_tag: "{{ system_service_tag }}"
+          power_state: "{{ system_power_state }}"
+          idrac_version: "{{ idrac_manager_version }}"
+          firmware_inventory: "{{ current_firmware_components }}"
+          current_versions: "{{ current_firmware_versions }}"
+          discovered_available_updates: "{{ available_firmware_update_entries | default([]) }}"
+          component_updates: "{{ discovery_component_report_rows | default([]) }}"
+          configured_targets: "{{ configured_firmware_targets | default([]) }}"
+          discovery_status: "{{ discovery_status }}"
+          discovery_error: "{{ discovery_error | trim }}"
+
+    - name: Report | Debug discovery data
+      ansible.builtin.debug:
+        msg:
+          hostname: "{{ inventory_hostname }}"
+          firmware_inventory_names: "{{ current_firmware_components | map(attribute='name') | list }}"
+          firmware_versions: "{{ current_firmware_versions }}"
+
+    - name: Report | Create latest discovery report directory  # noqa: run-once[task] risky-file-permissions
+      ansible.builtin.file:
+        path: "{{ idrac_discovery_report_latest_dir }}"
+        state: directory
+      delegate_to: localhost
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Create archive discovery report directory  # noqa: run-once[task] risky-file-permissions
+      ansible.builtin.file:
+        path: "{{ idrac_discovery_report_archive_dir }}"
+        state: directory
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_discovery_report_archive_enabled | bool
+
+    - name: Report | Reset consolidated discovery report data  # noqa: run-once[task]
+      ansible.builtin.set_fact:
+        idrac_discovery_summary_hosts: []
+        idrac_discovery_csv_rows: []
+      delegate_to: localhost
+      delegate_facts: true
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Final report | Display consolidated update discovery
+      ansible.builtin.debug:
+        msg:
+          title: "iDRAC Firmware Discovery Report"
+          timestamp: "{{ now(utc=true).isoformat() }}"
+          hosts_discovered: "{{ hostvars | dict2items | selectattr('value.host_discovery', 'defined') | map(attribute='key') | list }}"
+          discovery_summary:
+            - "{{ hostvars | dict2items | map(attribute='value') | selectattr('host_discovery', 'defined') | map(attribute='host_discovery') | list }}"
+      when: inventory_hostname == ansible_play_hosts_all[0]
+
+    - name: Final report | Generate discovery table
+      ansible.builtin.debug:
+        msg: |
+          FIRMWARE DISCOVERY REPORT
+          ==========================
+
+          {% for host, data in hostvars.items() %}
+          {% if 'host_discovery' in data %}
+
+          Host: {{ host }}
+          {{ '-' * 60 }}
+          iDRAC IP:           {{ data.host_discovery[host]['idrac_ip'] }}
+          System Model:       {{ data.host_discovery[host]['model'] }}
+          Service Tag:        {{ data.host_discovery[host]['service_tag'] }}
+          Power State:        {{ data.host_discovery[host]['power_state'] }}
+          Current iDRAC Ver:  {{ data.host_discovery[host]['idrac_version'] }}
+          Installed Firmware: {{ data.host_discovery[host]['firmware_inventory'] | map(attribute='name') | join(', ') }}
+          Component Versions: {{ data.host_discovery[host]['current_versions'] }}
+
+          {% endif %}
+          {% endfor %}
+      when: inventory_hostname == ansible_play_hosts_all[0]
+
+    - name: Report | Build consolidated discovery report data  # noqa: run-once[task]
+      ansible.builtin.set_fact:
+        idrac_discovery_summary_hosts: "{{ idrac_discovery_summary_hosts | default([]) + [hostvars[item].host_discovery[item]] }}"
+      loop: "{{ ansible_play_hosts_all }}"
+      delegate_to: localhost
+      delegate_facts: true
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - hostvars[item].host_discovery is defined
+        - hostvars[item].host_discovery[item] is defined
+
+    - name: Report | Build CSV report rows  # noqa: run-once[task]
+      ansible.builtin.set_fact:
+        idrac_discovery_csv_rows: "{{ idrac_discovery_csv_rows | default([]) + [idrac_discovery_csv_row] }}"
+      loop: "{{ hostvars.localhost.idrac_discovery_summary_hosts | default([]) | subelements('component_updates', skip_missing=true) }}"
+      loop_control:
+        label: "{{ item.0.inventory_hostname }} {{ item.1.component_name }}"
+      delegate_to: localhost
+      delegate_facts: true
+      run_once: true
+      vars:
+        idrac_discovery_csv_row:
+          inventory_hostname: "{{ item.0.inventory_hostname }}"
+          idrac_ip: "{{ item.0.idrac_ip }}"
+          model: "{{ item.0.model }}"
+          service_tag: "{{ item.0.service_tag }}"
+          idrac_version: "{{ item.0.idrac_version }}"
+          component_name: "{{ item.1.component_name }}"
+          current_version: "{{ item.1.current_version }}"
+          available_version: "{{ item.1.available_version }}"
+          reboot_required: "{{ item.1.reboot_required }}"
+          source_catalog: "{{ item.1.source_catalog }}"
+          discovery_status: "{{ item.0.discovery_status }}"
+          discovery_error: "{{ item.0.discovery_error }}"
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Export latest discovery summary JSON  # noqa: run-once[task]
+      ansible.builtin.copy:
+        content: >-
+          {{
+            {
+              'generated_at': now(utc=true).isoformat(),
+              'hosts': hostvars.localhost.idrac_discovery_summary_hosts | default([])
+            }
+            | to_nice_json
+          }}
+        dest: "{{ idrac_discovery_report_latest_dir }}/idrac_discovery_summary.json"
+        mode: "0644"
+      delegate_to: localhost
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Export latest discovery summary CSV  # noqa: run-once[task]
+      ansible.builtin.copy:
+        content: |
+          inventory_hostname,idrac_ip,model,service_tag,current_idrac_firmware_version,component_name,current_version,available_version,reboot_required,source_catalog,discovery_status,discovery_error
+          {% for row in hostvars.localhost.idrac_discovery_csv_rows | default([]) %}
+          {{
+            [
+              row.inventory_hostname,
+              row.idrac_ip,
+              row.model,
+              row.service_tag,
+              row.idrac_version,
+              row.component_name,
+              row.current_version,
+              row.available_version,
+              row.reboot_required,
+              row.source_catalog,
+              row.discovery_status,
+              row.discovery_error
+            ] | map('to_json') | join(',')
+          }}
+          {% endfor %}
+        dest: "{{ idrac_discovery_report_latest_dir }}/idrac_discovery_summary.csv"
+        mode: "0644"
+      delegate_to: localhost
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Export latest per-host discovery JSON  # noqa: run-once[task]
+      ansible.builtin.copy:
+        content: "{{ hostvars[item].host_discovery[item] | to_nice_json }}"
+        dest: "{{ idrac_discovery_report_latest_dir }}/{{ item }}.json"
+        mode: "0644"
+      loop: "{{ ansible_play_hosts_all }}"
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - hostvars[item].host_discovery is defined
+        - hostvars[item].host_discovery[item] is defined
+
+    - name: Report | Archive discovery summary JSON  # noqa: run-once[task]
+      ansible.builtin.copy:
+        src: "{{ idrac_discovery_report_latest_dir }}/idrac_discovery_summary.json"
+        dest: "{{ idrac_discovery_report_archive_dir }}/idrac_discovery_summary.json"
+        mode: "0644"
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_discovery_report_archive_enabled | bool
+
+    - name: Report | Archive discovery summary CSV  # noqa: run-once[task]
+      ansible.builtin.copy:
+        src: "{{ idrac_discovery_report_latest_dir }}/idrac_discovery_summary.csv"
+        dest: "{{ idrac_discovery_report_archive_dir }}/idrac_discovery_summary.csv"
+        mode: "0644"
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_discovery_report_archive_enabled | bool
+
+    - name: Report | Archive per-host discovery JSON  # noqa: run-once[task]
+      ansible.builtin.copy:
+        src: "{{ idrac_discovery_report_latest_dir }}/{{ item }}.json"
+        dest: "{{ idrac_discovery_report_archive_dir }}/{{ item }}.json"
+        mode: "0644"
+      loop: "{{ ansible_play_hosts_all }}"
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_discovery_report_archive_enabled | bool
+        - hostvars[item].host_discovery is defined
+        - hostvars[item].host_discovery[item] is defined
+
+    - name: Report | Show discovery report location  # noqa: run-once[task]
+      ansible.builtin.debug:
+        msg: |
+          Discovery reports written to:
+          {{ idrac_discovery_report_latest_dir }}
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report upload | Validate Wasabi upload settings  # noqa: run-once[task]
+      ansible.builtin.assert:
+        that:
+          - idrac_report_upload_provider == 'wasabi'
+          - idrac_report_bucket | length > 0
+          - idrac_report_prefix | length > 0
+          - idrac_report_s3_endpoint_url | length > 0
+          - idrac_report_s3_profile | length > 0
+          - idrac_report_s3_cli_path | length > 0
+        fail_msg: >-
+          Wasabi report upload is enabled, but one or more upload settings are missing.
+          Required: idrac_report_bucket, idrac_report_prefix,
+          idrac_report_s3_endpoint_url, idrac_report_s3_profile, idrac_report_s3_cli_path.
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_report_upload_enabled | bool
+
+    - name: Report upload | Check AWS CLI is available for discovery reports  # noqa: run-once[task]
+      ansible.builtin.command:
+        cmd: "{{ idrac_report_s3_cli_path }} --version"
+      register: idrac_discovery_report_aws_cli_check
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_report_upload_enabled | bool
+
+    - name: Report upload | Upload latest discovery reports to Wasabi  # noqa: run-once[task]
+      ansible.builtin.command:
+        argv:
+          - "{{ idrac_report_s3_cli_path }}"
+          - s3
+          - sync
+          - "{{ idrac_discovery_report_latest_dir }}/"
+          - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/discovery/latest/"
+          - --endpoint-url
+          - "{{ idrac_report_s3_endpoint_url }}"
+          - --profile
+          - "{{ idrac_report_s3_profile }}"
+      register: idrac_discovery_report_latest_upload
+      changed_when: false
+      no_log: true
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_report_upload_enabled | bool
+
+    - name: Report upload | Upload archived discovery reports to Wasabi  # noqa: run-once[task]
+      ansible.builtin.command:
+        argv:
+          - "{{ idrac_report_s3_cli_path }}"
+          - s3
+          - sync
+          - "{{ idrac_discovery_report_archive_dir }}/"
+          - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/discovery/archive/{{ idrac_discovery_report_timestamp }}/"
+          - --endpoint-url
+          - "{{ idrac_report_s3_endpoint_url }}"
+          - --profile
+          - "{{ idrac_report_s3_profile }}"
+      register: idrac_discovery_report_archive_upload
+      changed_when: false
+      no_log: true
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_report_upload_enabled | bool
+        - idrac_discovery_report_archive_enabled | bool
+
+    - name: Report upload | Show discovery report upload location  # noqa: run-once[task]
+      ansible.builtin.debug:
+        msg:
+          reports_uploaded_to:
+            - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/discovery/latest/"
+            - >-
+              {{
+                's3://' ~ idrac_report_bucket ~ '/' ~ idrac_report_prefix ~
+                '/discovery/archive/' ~ idrac_discovery_report_timestamp ~ '/'
+                if idrac_discovery_report_archive_enabled | bool
+                else 'archive upload disabled'
+              }}
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_report_upload_enabled | bool

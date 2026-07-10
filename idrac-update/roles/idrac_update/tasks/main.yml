@@ -1,0 +1,1308 @@
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - idrac_update_mode in ['check', 'apply']
+      - idrac_ip is defined
+      - idrac_update_user is defined
+      - idrac_update_user | length > 0
+      - idrac_update_password is defined
+      - idrac_update_password | length > 0
+      - idrac_update_items is defined
+    fail_msg: >-
+      Missing required iDRAC update variables. Define idrac_ip,
+      idrac_update_user, idrac_update_password, and idrac_update_items.
+
+- name: Pre-flight | Ensure iDRAC IPs are unique
+  ansible.builtin.assert:
+    that:
+      - idrac_ip_list | length == idrac_ip_list | unique | length
+    fail_msg: "Duplicate idrac_ip values detected in inventory. Each host must have a unique iDRAC IP."
+  vars:
+    idrac_ip_list: "{{ groups['dell_idrac'] | default(ansible_play_hosts_all) | map('extract', hostvars, 'idrac_ip') | list }}"
+  run_once: true
+
+- name: Reset per-host runtime facts
+  ansible.builtin.set_fact:
+    idrac_update_items_normalized: []
+    idrac_update_firmware_inventory: []
+    idrac_update_firmware_inventory_after: []
+    idrac_update_firmware_inventory_details:
+      results: []
+    idrac_update_firmware_inventory_after_details:
+      results: []
+    idrac_update_firmware_versions: {}
+    idrac_update_firmware_versions_after: {}
+    idrac_update_compliance_report: []
+    idrac_update_install_plan: []
+    idrac_update_install_results: []
+    idrac_update_firmware_discovery_names: []
+    idrac_update_results:
+      results: []
+    idrac_update_image_uri_checks:
+      results: []
+    idrac_update_final_report: []
+    idrac_update_idrac_expected_version: ""
+    idrac_update_idrac_update_expected: false
+    idrac_update_current_version: "UNKNOWN"
+    idrac_update_final_version: "UNKNOWN"
+    idrac_update_power_state_before: "UNKNOWN"
+    idrac_update_sel_critical_entries_before: []
+    idrac_update_sel_critical_entries_after: []
+    idrac_update_sel_critical_signatures_before: []
+    idrac_update_sel_new_critical_entries: []
+    idrac_update_sel_unmatched_critical_entries: []
+    idrac_update_sel_critical_count_before: 0
+    idrac_update_sel_critical_count_after: 0
+
+- name: Normalize approved/disallowed component names
+  ansible.builtin.set_fact:
+    idrac_update_approved_component_set: "{{ idrac_update_approved_components | map('lower') | map('regex_replace', '\\s+', '_') | list }}"
+    idrac_update_disallowed_component_set: "{{ idrac_update_disallowed_components | map('lower') | map('regex_replace', '\\s+', '_') | list }}"
+
+- name: Initialize normalized update items
+  ansible.builtin.set_fact:
+    idrac_update_items_normalized: []
+
+- name: Normalize requested update items
+  ansible.builtin.set_fact:
+    idrac_update_items_normalized: >-
+      {{
+        idrac_update_items_normalized
+        + [(item | combine({
+          'name_normalized': (item.name | lower | regex_replace('\\s+', '_')),
+          'transfer_protocol': item.transfer_protocol | default('HTTP')
+        }))]
+      }}
+  loop: "{{ idrac_update_items }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Validate normalized firmware update item list
+  ansible.builtin.assert:
+    that:
+      - idrac_update_items_normalized is defined
+      - idrac_update_items_normalized | length > 0
+    fail_msg: "No firmware update items were available after normalization."
+
+- name: Validate normalized firmware update items
+  ansible.builtin.assert:
+    that:
+      - item.name_normalized is defined
+      - item.target_version is defined
+      - item.firmware_image_uri is defined
+    fail_msg: "Invalid firmware update item after normalization."
+  loop: "{{ idrac_update_items_normalized }}"
+  loop_control:
+    label: "{{ item.name | default('unknown') }}"
+
+- name: Pre-flight | Report credential variable status
+  ansible.builtin.debug:
+    msg:
+      username_set: "{{ idrac_update_user | length > 0 }}"
+      username_length: "{{ idrac_update_user | length }}"
+      password_set: "{{ idrac_update_password | length > 0 }}"
+      password_length: "{{ idrac_update_password | length }}"
+  when: ansible_verbosity >= 1
+
+- name: Pre-flight | Check iDRAC Redfish is reachable
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: [200, 401, 403]
+    timeout: 30
+  register: idrac_update_reachable
+  no_log: true
+  failed_when: false
+
+- name: Pre-flight | Report iDRAC connectivity issue
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      idrac_ip: "{{ idrac_ip }}"
+      idrac_port: "{{ idrac_update_port }}"
+      status: "{{ idrac_update_reachable.status | default('no response') }}"
+      reason: >-
+        {% if idrac_update_reachable.status | default(0) == 401 %}
+        Authentication failed. Verify IDRAC_USERNAME and IDRAC_PASSWORD.
+        {% elif idrac_update_reachable.status | default(0) == 403 %}
+        Access forbidden. Verify the iDRAC user has firmware update privileges.
+        {% else %}
+        Connection failed. Verify iDRAC IP, port, certificate setting, and network reachability.
+        {% endif %}
+      error: "{{ idrac_update_reachable.msg | default('unknown') }}"
+  when: idrac_update_reachable.status is not defined or idrac_update_reachable.status != 200
+
+- name: Pre-flight | Fail if iDRAC Redfish is unreachable
+  ansible.builtin.fail:
+    msg: >-
+      Failed to connect or authenticate to iDRAC Redfish on {{ inventory_hostname }}
+      at https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1.
+      HTTP status={{ idrac_update_reachable.status | default('no response') }}.
+  when: idrac_update_reachable.status is not defined or idrac_update_reachable.status != 200
+
+- name: Pre-flight | Capture host power state
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Systems/System.Embedded.1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: [200, 401, 403, 404]
+    timeout: 30
+  register: idrac_update_system
+  no_log: true
+  failed_when: false
+
+- name: Pre-flight | Report system endpoint issue
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      endpoint: "/redfish/v1/Systems/System.Embedded.1"
+      status: "{{ idrac_update_system.status | default('no response') }}"
+      reason: >-
+        {% if idrac_update_system.status | default(0) == 401 %}
+        Authentication failed while querying system inventory.
+        {% elif idrac_update_system.status | default(0) == 403 %}
+        Access forbidden while querying system inventory.
+        {% elif idrac_update_system.status | default(0) == 404 %}
+        System.Embedded.1 was not found. This iDRAC may expose a different Systems member URI.
+        {% else %}
+        Failed to query system inventory.
+        {% endif %}
+      error: "{{ idrac_update_system.msg | default('unknown') }}"
+  when: idrac_update_system.status is not defined or idrac_update_system.status != 200
+
+- name: Pre-flight | Fail if system endpoint is unavailable
+  ansible.builtin.fail:
+    msg: >-
+      Failed to query host power state on {{ inventory_hostname }} from
+      https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Systems/System.Embedded.1.
+      HTTP status={{ idrac_update_system.status | default('no response') }}.
+  when: idrac_update_system.status is not defined or idrac_update_system.status != 200
+
+- name: Pre-flight | Capture update health baseline timestamp
+  ansible.builtin.set_fact:
+    idrac_update_health_baseline_time: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%S') }}"
+
+- name: Pre-flight | Capture SEL before update
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1/LogServices/Sel/Entries"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_sel_before
+  failed_when: false
+  no_log: true
+
+- name: Pre-flight | Get iDRAC manager information
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_manager
+  no_log: true
+
+- name: Pre-flight | Capture current iDRAC state
+  ansible.builtin.set_fact:
+    idrac_update_current_version: "{{ idrac_update_manager.json.FirmwareVersion | default('UNKNOWN') }}"
+    idrac_update_power_state_before: "{{ idrac_update_system.json.PowerState | default('UNKNOWN') }}"
+    idrac_update_sel_critical_entries_before: >-
+      {{
+        idrac_update_sel_before.json.Members | default([])
+        | selectattr('Severity', 'defined')
+        | selectattr('Severity', 'equalto', 'Critical')
+        | list
+      }}
+    idrac_update_sel_critical_count_before: >-
+      {{
+        idrac_update_sel_before.json.Members | default([])
+        | selectattr('Severity', 'defined')
+        | selectattr('Severity', 'equalto', 'Critical')
+        | list
+        | length
+      }}
+
+- name: Pre-flight | Build critical SEL signature list
+  ansible.builtin.set_fact:
+    idrac_update_sel_critical_signatures_before: "{{ idrac_update_sel_critical_signatures_before | default([]) + [idrac_update_sel_entry_signature] }}"
+  loop: "{{ idrac_update_sel_critical_entries_before }}"
+  loop_control:
+    label: "{{ item.Id | default(item.Created | default('unknown')) }}"
+  vars:
+    idrac_update_sel_entry_signature: >-
+      {{
+        (item.Id | default(item['@odata.id'] | default('unknown'))) ~ '|' ~
+        (item.Created | default('')) ~ '|' ~
+        (item.Message | default(item.Name | default('')))
+      }}
+
+- name: Pre-flight | Capture firmware inventory
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/UpdateService/FirmwareInventory"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: [200, 404]
+    timeout: 30
+  register: idrac_update_firmware_inventory
+  failed_when: false
+  no_log: true
+
+- name: Pre-flight | Capture fallback manager firmware inventory
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1/FirmwareInventory"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_firmware_inventory_fallback
+  failed_when: false
+  no_log: true
+  when: idrac_update_firmware_inventory.status is not defined or idrac_update_firmware_inventory.status != 200
+
+- name: Pre-flight | Use fallback manager firmware inventory
+  ansible.builtin.set_fact:
+    idrac_update_firmware_inventory: "{{ idrac_update_firmware_inventory_fallback }}"
+  when:
+    - idrac_update_firmware_inventory.status is not defined or idrac_update_firmware_inventory.status != 200
+    - idrac_update_firmware_inventory_fallback is defined
+    - idrac_update_firmware_inventory_fallback.status is defined
+    - idrac_update_firmware_inventory_fallback.status == 200
+
+- name: Pre-flight | Fetch firmware inventory items
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}{{ item['@odata.id'] }}"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  loop: "{{ idrac_update_firmware_inventory.json.Members | default([]) }}"
+  loop_control:
+    label: "{{ item['@odata.id'] }}"
+  register: idrac_update_firmware_inventory_details
+  failed_when: false
+  no_log: true
+  when: idrac_update_firmware_inventory.json.Members is defined
+
+- name: Pre-flight | Build firmware inventory list
+  ansible.builtin.set_fact:
+    idrac_update_firmware_inventory: >-
+      {{
+        idrac_update_firmware_inventory_details.results | default([])
+        | selectattr('json', 'defined')
+        | map(attribute='json')
+        | list
+      }}
+  when: idrac_update_firmware_inventory_details is defined
+
+- name: Pre-flight | Fallback firmware inventory
+  ansible.builtin.set_fact:
+    idrac_update_firmware_inventory:
+      - name: "iDRAC"
+        id: "iDRAC"
+        version: "{{ idrac_update_current_version }}"
+        source: "Managers/iDRAC.Embedded.1"
+  when: idrac_update_firmware_inventory is not defined or idrac_update_firmware_inventory | length == 0
+
+- name: Pre-flight | Build firmware version lookup
+  ansible.builtin.set_fact:
+    idrac_update_firmware_versions: >-
+      {{
+        idrac_update_firmware_versions | default({})
+        | combine(
+            (idrac_update_firmware_key in (idrac_update_firmware_versions | default({})))
+            | ternary({}, {idrac_update_firmware_key: idrac_update_firmware_version})
+          )
+      }}
+  loop: "{{ idrac_update_firmware_inventory }}"
+  vars:
+    idrac_update_firmware_key: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) | lower | regex_replace('\\s+', '_') }}"
+    idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
+
+- name: Pre-flight | Build common firmware version aliases
+  ansible.builtin.set_fact:
+    idrac_update_firmware_versions: >-
+      {{
+        idrac_update_firmware_versions
+        | combine(
+            (idrac_update_firmware_alias | length > 0 and idrac_update_firmware_alias not in idrac_update_firmware_versions)
+            | ternary({(idrac_update_firmware_alias): idrac_update_firmware_version}, {})
+          )
+      }}
+  loop: "{{ idrac_update_firmware_inventory }}"
+  vars:
+    idrac_update_component_name: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) }}"
+    idrac_update_component_name_normalized: "{{ idrac_update_component_name | lower | regex_replace('\\s+', '_') }}"
+    idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
+    idrac_update_firmware_alias: >-
+      {{
+        'idrac' if idrac_update_component_name_normalized == 'integrated_dell_remote_access_controller'
+        else 'lifecycle_controller' if idrac_update_component_name_normalized == 'lifecycle_controller'
+        else 'diagnostics' if 'diagnostics' in idrac_update_component_name_normalized
+        else ''
+      }}
+
+- name: Pre-flight | Set iDRAC firmware version alias from manager
+  ansible.builtin.set_fact:
+    idrac_update_firmware_versions: "{{ idrac_update_firmware_versions | combine({'idrac': idrac_update_current_version}) }}"
+
+- name: Pre-flight | Fail if iDRAC firmware version is unavailable
+  ansible.builtin.fail:
+    msg: >-
+      Failed to determine iDRAC firmware version for {{ inventory_hostname }}
+      from Redfish Manager endpoint. Refusing to continue with UNKNOWN iDRAC version.
+  when:
+    - "'idrac' not in idrac_update_firmware_versions or idrac_update_firmware_versions.idrac == 'UNKNOWN'"
+
+- name: Pre-flight | Build component compliance report
+  ansible.builtin.set_fact:
+    idrac_update_compliance_report: "{{ idrac_update_compliance_report | default([]) + [compliance_item] }}"
+  loop: "{{ idrac_update_items_normalized }}"
+  vars:
+    current_version: >-
+      {{ idrac_update_firmware_versions[item.name_normalized] | default('UNKNOWN') }}
+    approved: "{{ item.name_normalized in idrac_update_approved_component_set }}"
+    excluded: "{{ item.name_normalized in idrac_update_disallowed_component_set }}"
+    expected_version: "{{ item.installed_version | default(item.target_version) }}"
+    drift: "{{ current_version != expected_version }}"
+    compliance_item:
+      name: "{{ item.name }}"
+      normalized_name: "{{ item.name_normalized }}"
+      current_version: "{{ current_version }}"
+      target_version: "{{ item.target_version }}"
+      expected_installed_version: "{{ expected_version }}"
+      approved: "{{ approved }}"
+      excluded: "{{ excluded }}"
+      drift: "{{ drift }}"
+      action: >-
+        {% if item.name_normalized in idrac_update_disallowed_component_set %}excluded
+        {% elif item.name_normalized not in idrac_update_approved_component_set %}not approved
+        {% elif current_version == expected_version %}compliant
+        {% else %}pending
+        {% endif %}
+
+- name: Pre-flight | Build firmware install plan
+  ansible.builtin.set_fact:
+    idrac_update_install_plan: "{{ idrac_update_install_plan + [idrac_update_install_plan_item] }}"
+  loop: "{{ idrac_update_items_normalized }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    current_version: "{{ idrac_update_firmware_versions[item.name_normalized] | default('UNKNOWN') }}"
+    expected_installed_version: "{{ item.installed_version | default(item.target_version) }}"
+    approved: "{{ item.name_normalized in idrac_update_approved_component_set }}"
+    excluded: "{{ item.name_normalized in idrac_update_disallowed_component_set }}"
+    drift: "{{ current_version != expected_installed_version }}"
+    should_install: >-
+      {{
+        item.name_normalized in idrac_update_approved_component_set
+        and item.name_normalized not in idrac_update_disallowed_component_set
+        and current_version != expected_installed_version
+      }}
+    skip_reason: >-
+      {% if current_version == 'UNKNOWN' %}unknown_current_version
+      {% elif item.name_normalized in idrac_update_disallowed_component_set %}excluded
+      {% elif item.name_normalized not in idrac_update_approved_component_set %}not_approved
+      {% elif current_version == expected_installed_version %}compliant
+      {% else %}will_install
+      {% endif %}
+    idrac_update_install_plan_item:
+      name: "{{ item.name }}"
+      normalized_name: "{{ item.name_normalized }}"
+      current_version: "{{ current_version }}"
+      target_version: "{{ item.target_version }}"
+      expected_installed_version: "{{ expected_installed_version }}"
+      firmware_image_uri: "{{ item.firmware_image_uri }}"
+      transfer_protocol: "{{ item.transfer_protocol }}"
+      approved: "{{ approved }}"
+      excluded: "{{ excluded }}"
+      drift: "{{ drift }}"
+      should_install: "{{ should_install }}"
+      skip_reason: "{{ skip_reason }}"
+
+- name: Apply mode | Show firmware install plan
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      idrac_ip: "{{ idrac_ip }}"
+      install_plan: "{{ idrac_update_install_plan }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - not idrac_update_no_log | bool
+
+- name: Apply mode | Fail if approved firmware current version is unknown
+  ansible.builtin.fail:
+    msg: >-
+      Cannot make firmware update decision for {{ inventory_hostname }}
+      component={{ item.name }} because current_version is UNKNOWN.
+      Version map={{ idrac_update_firmware_versions }}.
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - item.approved | bool
+    - not item.excluded | bool
+    - item.current_version == 'UNKNOWN'
+
+- name: Pre-flight | Build firmware discovery display list
+  ansible.builtin.set_fact:
+    idrac_update_firmware_discovery_names: "{{ idrac_update_firmware_discovery_names | default([]) + [firmware_name] }}"
+  loop: "{{ idrac_update_firmware_inventory }}"
+  vars:
+    firmware_name: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) }}"
+
+- name: Pre-flight | Firmware discovery and compliance report
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      mode: "{{ idrac_update_mode }}"
+      power_state_before: "{{ idrac_update_power_state_before }}"
+      sel_critical_before: "{{ idrac_update_sel_critical_count_before }}"
+      discovery: "{{ idrac_update_firmware_discovery_names | default([]) }}"
+      compliance: "{{ idrac_update_compliance_report }}"
+
+- name: Check mode | Report only
+  ansible.builtin.debug:
+    msg: >-
+      CHECK ONLY: {{ inventory_hostname }}
+      compliance={{ idrac_update_compliance_report }}
+  when: idrac_update_mode == 'check'
+
+- name: Apply mode | Report firmware components selected for install
+  ansible.builtin.debug:
+    msg: >-
+      APPLY PLAN: {{ inventory_hostname }} component={{ item.name }}
+      current={{ item.current_version }}
+      target={{ item.target_version }}
+      expected_installed={{ item.expected_installed_version }}
+      approved={{ item.approved }}
+      excluded={{ item.excluded }}
+      drift={{ item.drift }}
+      should_install={{ item.should_install }}
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: idrac_update_mode == 'apply'
+
+- name: Apply mode | Determine expected iDRAC final version
+  ansible.builtin.set_fact:
+    idrac_update_idrac_expected_version: "{{ item.expected_installed_version }}"
+    idrac_update_idrac_update_expected: true
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - item.normalized_name == 'idrac'
+    - item.should_install | bool
+
+- name: Pre-flight | Check firmware image URI
+  ansible.builtin.uri:
+    url: "{{ item.firmware_image_uri }}"
+    method: HEAD
+    follow_redirects: all
+    status_code: "{{ idrac_update_image_uri_status_codes }}"
+    timeout: "{{ idrac_update_image_uri_timeout }}"
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: idrac_update_image_uri_checks
+  failed_when: false
+  when:
+    - idrac_update_validate_image_uri | bool
+    - item.approved | bool
+    - not item.excluded | bool
+    - item.firmware_image_uri is defined
+    - >-
+      idrac_update_mode == 'check'
+      or item.should_install | bool
+
+- name: Pre-flight | Warn about unreachable firmware image URI
+  ansible.builtin.debug:
+    msg:
+      warning: "Firmware image URI is not reachable from the Ansible control node"
+      mode: "{{ idrac_update_mode }}"
+      component: "{{ item.item.name }}"
+      target_version: "{{ item.item.target_version }}"
+      firmware_image_uri: "{{ item.item.firmware_image_uri }}"
+      expected_status_codes: "{{ idrac_update_image_uri_status_codes }}"
+      status: "{{ item.status | default('no response') }}"
+      error: "{{ item.msg | default('unknown') }}"
+  loop: "{{ idrac_update_image_uri_checks.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('unknown') }}"
+  when:
+    - not item.skipped | default(false)
+    - item.status | default(0) not in idrac_update_image_uri_status_codes
+
+- name: Pre-flight | Fail if firmware image URI is unreachable
+  ansible.builtin.fail:
+    msg: >-
+      Firmware image URI validation failed for {{ item.item.name }}.
+      Expected HTTP status {{ idrac_update_image_uri_status_codes }},
+      got {{ item.status | default('no response') }}.
+      URI: {{ item.item.firmware_image_uri }}.
+      Fix the path or set idrac_update_validate_image_uri=false to bypass this pre-flight check.
+  loop: "{{ idrac_update_image_uri_checks.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('unknown') }}"
+  when:
+    - not item.skipped | default(false)
+    - item.status | default(0) not in idrac_update_image_uri_status_codes
+
+- name: Apply mode | Report firmware install action
+  ansible.builtin.debug:
+    msg: >-
+      Installing {{ item.name }} on {{ inventory_hostname }}
+      from {{ item.current_version }} to {{ item.expected_installed_version }}
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - item.should_install | bool
+
+- name: Apply mode | Stage and install approved firmware components
+  dellemc.openmanage.redfish_firmware:
+    baseuri: "{{ idrac_ip }}:{{ idrac_update_port }}"
+    username: "{{ idrac_update_user }}"
+    password: "{{ idrac_update_password }}"
+    image_uri: "{{ item.firmware_image_uri }}"
+    transfer_protocol: "{{ item.transfer_protocol }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    job_wait: true
+    job_wait_timeout: "{{ idrac_job_wait_timeout | default(1800) }}"
+    timeout: 60
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: idrac_update_results
+  no_log: "{{ idrac_update_no_log }}"
+  changed_when: item.should_install | bool
+  when:
+    - idrac_update_mode == 'apply'
+    - item.should_install | bool
+
+- name: Apply mode | Build install result entries for attempted firmware components
+  ansible.builtin.set_fact:
+    idrac_update_install_results: "{{ idrac_update_install_results + [idrac_update_install_result_item] }}"
+  loop: "{{ idrac_update_results.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('unknown') }}"
+  vars:
+    idrac_update_install_result_item:
+      host: "{{ inventory_hostname }}"
+      name: "{{ item.item.name }}"
+      normalized_name: "{{ item.item.normalized_name }}"
+      before_version: "{{ item.item.current_version }}"
+      expected_version: "{{ item.item.expected_installed_version }}"
+      redfish_task_id: "{{ item.task.id | default(item.task.Id | default(item.task.uri | default(''))) }}"
+      changed: "{{ item.changed | default(false) }}"
+      skipped: false
+  when:
+    - idrac_update_mode == 'apply'
+    - not item.skipped | default(false)
+
+- name: Apply mode | Build skipped install result entries
+  ansible.builtin.set_fact:
+    idrac_update_install_results: "{{ idrac_update_install_results + [idrac_update_install_result_item] }}"
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    idrac_update_install_result_item:
+      host: "{{ inventory_hostname }}"
+      name: "{{ item.name }}"
+      normalized_name: "{{ item.normalized_name }}"
+      before_version: "{{ item.current_version }}"
+      expected_version: "{{ item.expected_installed_version }}"
+      redfish_task_id: ""
+      changed: false
+      skipped: true
+      reason: "{{ item.skip_reason }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - not item.should_install | bool
+
+- name: Apply mode | Report skipped firmware components
+  ansible.builtin.debug:
+    msg: >-
+      SKIPPED: {{ inventory_hostname }} component={{ item.name }}
+      current={{ item.current_version }}
+      target={{ item.target_version }}
+      expected_installed={{ item.expected_installed_version }}
+      reason={{ item.skip_reason }}
+  loop: "{{ idrac_update_install_plan }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - not item.should_install | bool
+
+- name: Apply mode | Wait for iDRAC Redfish to return
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_after_reboot
+  retries: 40
+  delay: 30
+  until: idrac_update_after_reboot.status == 200
+  no_log: true
+  when:
+    - idrac_update_mode == 'apply'
+    - idrac_update_results is defined
+    - idrac_update_results.results | selectattr('changed', 'equalto', true) | list | length > 0
+
+- name: Apply mode | Wait for iDRAC Manager firmware version to reach expected version
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_manager_after
+  retries: 30
+  delay: 20
+  until:
+    - idrac_update_manager_after.json is defined
+    - idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN') == idrac_update_idrac_expected_version
+  no_log: "{{ idrac_update_no_log }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - idrac_update_idrac_update_expected | bool
+
+- name: Post-check | Get final iDRAC manager information
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_manager_after
+  no_log: true
+
+- name: Post-check | Capture SEL after update
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1/LogServices/Sel/Entries"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_sel_after
+  failed_when: false
+  no_log: true
+
+- name: Post-check | Capture final firmware inventory
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/UpdateService/FirmwareInventory"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: [200, 404]
+    timeout: 30
+  register: idrac_update_firmware_inventory_after
+  failed_when: false
+  no_log: true
+
+- name: Post-check | Capture fallback final manager firmware inventory
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1/FirmwareInventory"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_firmware_inventory_after_fallback
+  failed_when: false
+  no_log: true
+  when: idrac_update_firmware_inventory_after.status is not defined or idrac_update_firmware_inventory_after.status != 200
+
+- name: Post-check | Use fallback final manager firmware inventory
+  ansible.builtin.set_fact:
+    idrac_update_firmware_inventory_after: "{{ idrac_update_firmware_inventory_after_fallback }}"
+  when:
+    - idrac_update_firmware_inventory_after.status is not defined or idrac_update_firmware_inventory_after.status != 200
+    - idrac_update_firmware_inventory_after_fallback is defined
+    - idrac_update_firmware_inventory_after_fallback.status is defined
+    - idrac_update_firmware_inventory_after_fallback.status == 200
+
+- name: Post-check | Fetch firmware inventory items after update
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}{{ item['@odata.id'] }}"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  loop: "{{ idrac_update_firmware_inventory_after.json.Members | default([]) }}"
+  loop_control:
+    label: "{{ item['@odata.id'] }}"
+  register: idrac_update_firmware_inventory_after_details
+  failed_when: false
+  no_log: true
+  when: idrac_update_firmware_inventory_after.json.Members is defined
+
+- name: Post-check | Build final firmware inventory list
+  ansible.builtin.set_fact:
+    idrac_update_firmware_inventory_after: >-
+      {{
+        idrac_update_firmware_inventory_after_details.results | default([])
+        | selectattr('json', 'defined')
+        | map(attribute='json')
+        | list
+      }}
+  when: idrac_update_firmware_inventory_after_details is defined
+
+- name: Post-check | Fallback final firmware inventory
+  ansible.builtin.set_fact:
+    idrac_update_firmware_inventory_after:
+      - name: "iDRAC"
+        id: "iDRAC"
+        version: "{{ idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN') }}"
+        source: "Managers/iDRAC.Embedded.1"
+  when: idrac_update_firmware_inventory_after is not defined or idrac_update_firmware_inventory_after | length == 0
+
+- name: Post-check | Build final firmware version lookup
+  ansible.builtin.set_fact:
+    idrac_update_firmware_versions_after: >-
+      {{
+        idrac_update_firmware_versions_after | default({})
+        | combine(
+            (idrac_update_firmware_key in (idrac_update_firmware_versions_after | default({})))
+            | ternary({}, {idrac_update_firmware_key: idrac_update_firmware_version})
+          )
+      }}
+  loop: "{{ idrac_update_firmware_inventory_after }}"
+  vars:
+    idrac_update_firmware_key: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) | lower | regex_replace('\\s+', '_') }}"
+    idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
+
+- name: Post-check | Build common final firmware version aliases
+  ansible.builtin.set_fact:
+    idrac_update_firmware_versions_after: >-
+      {{
+        idrac_update_firmware_versions_after
+        | combine(
+            (idrac_update_firmware_alias | length > 0 and idrac_update_firmware_alias not in idrac_update_firmware_versions_after)
+            | ternary({(idrac_update_firmware_alias): idrac_update_firmware_version}, {})
+          )
+      }}
+  loop: "{{ idrac_update_firmware_inventory_after }}"
+  vars:
+    idrac_update_component_name: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) }}"
+    idrac_update_component_name_normalized: "{{ idrac_update_component_name | lower | regex_replace('\\s+', '_') }}"
+    idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
+    idrac_update_firmware_alias: >-
+      {{
+        'idrac' if idrac_update_component_name_normalized == 'integrated_dell_remote_access_controller'
+        else 'lifecycle_controller' if idrac_update_component_name_normalized == 'lifecycle_controller'
+        else 'diagnostics' if 'diagnostics' in idrac_update_component_name_normalized
+        else ''
+      }}
+
+- name: Post-check | Set final iDRAC firmware version alias from manager
+  ansible.builtin.set_fact:
+    idrac_update_firmware_versions_after: >-
+      {{
+        idrac_update_firmware_versions_after
+        | combine({'idrac': idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN')})
+      }}
+
+- name: Post-check | Fail if final iDRAC firmware version is unavailable
+  ansible.builtin.fail:
+    msg: >-
+      Failed to determine final iDRAC firmware version for {{ inventory_hostname }}
+      from Redfish Manager endpoint. Refusing to report compliance with UNKNOWN iDRAC version.
+  when:
+    - "'idrac' not in idrac_update_firmware_versions_after or idrac_update_firmware_versions_after.idrac == 'UNKNOWN'"
+
+- name: Post-check | Extract final state
+  ansible.builtin.set_fact:
+    idrac_update_final_version: "{{ idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN') }}"
+    idrac_update_sel_critical_entries_after: >-
+      {{
+        idrac_update_sel_after.json.Members | default([])
+        | selectattr('Severity', 'defined')
+        | selectattr('Severity', 'equalto', 'Critical')
+        | list
+      }}
+    idrac_update_sel_critical_count_after: >-
+      {{
+        idrac_update_sel_after.json.Members | default([])
+        | selectattr('Severity', 'defined')
+        | selectattr('Severity', 'equalto', 'Critical')
+        | list
+        | length
+      }}
+
+- name: Post-check | Build final per-component report
+  ansible.builtin.set_fact:
+    idrac_update_final_report: "{{ idrac_update_final_report + [idrac_update_final_report_item] }}"
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    before_version: "{{ item.current_version }}"
+    expected_version: "{{ item.expected_installed_version }}"
+    final_version: "{{ idrac_update_firmware_versions_after[item.normalized_name] | default('UNKNOWN') }}"
+    changed: >-
+      {{
+        idrac_update_install_results | default([])
+        | selectattr('normalized_name', 'equalto', item.normalized_name)
+        | selectattr('changed', 'equalto', true)
+        | list
+        | length > 0
+      }}
+    skipped: >-
+      {{
+        idrac_update_install_results | default([])
+        | selectattr('normalized_name', 'equalto', item.normalized_name)
+        | selectattr('skipped', 'equalto', true)
+        | list
+        | length > 0
+      }}
+    verification_passed: "{{ item.approved | bool and not item.excluded | bool and final_version == expected_version }}"
+    final_action: >-
+      {% if item.excluded | bool %}excluded
+      {% elif not item.approved | bool %}not_approved
+      {% elif verification_passed and changed %}installed
+      {% elif verification_passed and not item.should_install | bool %}already_compliant
+      {% elif verification_passed %}verified
+      {% elif item.should_install | bool %}verification_failed
+      {% else %}{{ item.skip_reason }}
+      {% endif %}
+    idrac_update_final_report_item:
+      host: "{{ inventory_hostname }}"
+      name: "{{ item.name }}"
+      normalized_name: "{{ item.normalized_name }}"
+      before_version: "{{ before_version }}"
+      target_version: "{{ item.target_version }}"
+      expected_installed_version: "{{ expected_version }}"
+      final_version: "{{ final_version }}"
+      action: "{{ final_action }}"
+      changed: "{{ changed }}"
+      skipped: "{{ skipped }}"
+      verification_passed: "{{ verification_passed }}"
+
+- name: Post-check | Firmware verification report
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      firmware_verification: "{{ idrac_update_final_report }}"
+
+- name: Post-check | Firmware version dictionaries
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      idrac_ip: "{{ idrac_ip }}"
+      idrac_update_current_version: "{{ idrac_update_current_version }}"
+      idrac_update_firmware_versions: "{{ idrac_update_firmware_versions }}"
+      idrac_update_firmware_versions_after: "{{ idrac_update_firmware_versions_after }}"
+      idrac_update_items_normalized: "{{ idrac_update_items_normalized }}"
+  when: not idrac_update_no_log | bool
+
+- name: Post-check | Reset new critical SEL entries
+  ansible.builtin.set_fact:
+    idrac_update_sel_new_critical_entries: []
+    idrac_update_sel_unmatched_critical_entries: []
+
+- name: Post-check | Detect unmatched critical SEL entries
+  ansible.builtin.set_fact:
+    idrac_update_sel_unmatched_critical_entries: "{{ idrac_update_sel_unmatched_critical_entries + [item] }}"
+  loop: "{{ idrac_update_sel_critical_entries_after }}"
+  loop_control:
+    label: "{{ item.Id | default(item.Created | default('unknown')) }}"
+  vars:
+    idrac_update_sel_entry_signature: >-
+      {{
+        (item.Id | default(item['@odata.id'] | default('unknown'))) ~ '|' ~
+        (item.Created | default('')) ~ '|' ~
+        (item.Message | default(item.Name | default('')))
+      }}
+  when: idrac_update_sel_entry_signature not in (idrac_update_sel_critical_signatures_before | default([]))
+
+- name: Post-check | Detect new timestamped critical SEL entries
+  ansible.builtin.set_fact:
+    idrac_update_sel_new_critical_entries: "{{ idrac_update_sel_new_critical_entries + [item] }}"
+  loop: "{{ idrac_update_sel_unmatched_critical_entries }}"
+  loop_control:
+    label: "{{ item.Id | default(item.Created | default('unknown')) }}"
+  when:
+    - item.Created is defined
+    - item.Created >= idrac_update_health_baseline_time
+
+- name: Post-check | Verify approved components reached target version
+  ansible.builtin.assert:
+    that:
+      - idrac_update_firmware_versions_after[item.normalized_name] | default('UNKNOWN') == item.expected_installed_version
+    fail_msg: >-
+      FAILED: {{ inventory_hostname }} component={{ item.name }}
+      before={{ item.current_version }}
+      final={{ idrac_update_firmware_versions_after[item.normalized_name] | default('UNKNOWN') }}
+      target={{ item.target_version }}
+      expected_installed={{ item.expected_installed_version }}
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - item.should_install | bool
+
+- name: Post-check | Report new SEL critical entries
+  ansible.builtin.debug:
+    msg:
+      warning: "New Critical SEL entries detected after firmware update"
+      host: "{{ inventory_hostname }}"
+      health_baseline_time: "{{ idrac_update_health_baseline_time }}"
+      before_count: "{{ idrac_update_sel_critical_count_before }}"
+      after_count: "{{ idrac_update_sel_critical_count_after }}"
+      new_critical_entries: "{{ idrac_update_sel_new_critical_entries }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - idrac_update_sel_new_critical_entries | length > 0
+
+- name: Post-check | Report unmatched historical SEL critical entries
+  ansible.builtin.debug:
+    msg:
+      warning: "Critical SEL entries changed between snapshots, but none were timestamped after the update baseline"
+      host: "{{ inventory_hostname }}"
+      health_baseline_time: "{{ idrac_update_health_baseline_time }}"
+      before_count: "{{ idrac_update_sel_critical_count_before }}"
+      after_count: "{{ idrac_update_sel_critical_count_after }}"
+      unmatched_critical_entries: "{{ idrac_update_sel_unmatched_critical_entries }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - idrac_update_sel_new_critical_entries | length == 0
+    - idrac_update_sel_unmatched_critical_entries | length > 0
+
+- name: Post-check | Verify no new SEL critical entries
+  ansible.builtin.assert:
+    that:
+      - idrac_update_sel_new_critical_entries | length == 0
+    fail_msg: >-
+      FAILED: New SEL critical entries detected.
+      Before={{ idrac_update_sel_critical_count_before }}, After={{ idrac_update_sel_critical_count_after }}.
+      Review the previous task output for the new Critical SEL entry details.
+  when: idrac_update_mode == 'apply'
+
+- name: Final report
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      mode: "{{ idrac_update_mode }}"
+      power_state_before: "{{ idrac_update_power_state_before }}"
+      sel_critical_before: "{{ idrac_update_sel_critical_count_before }}"
+      sel_critical_after: "{{ idrac_update_sel_critical_count_after | default('not_checked') }}"
+      compliance: "{{ idrac_update_compliance_report }}"
+      final_versions: "{{ idrac_update_firmware_versions_after | default(idrac_update_firmware_versions | default({})) }}"
+      firmware_verification: "{{ idrac_update_final_report }}"
+
+- name: Report | Build update report entry
+  ansible.builtin.set_fact:
+    idrac_update_report_entry:
+      inventory_hostname: "{{ inventory_hostname }}"
+      idrac_ip: "{{ idrac_ip }}"
+      mode: "{{ idrac_update_mode }}"
+      power_state_before: "{{ idrac_update_power_state_before }}"
+      sel_critical_before: "{{ idrac_update_sel_critical_count_before }}"
+      sel_critical_after: "{{ idrac_update_sel_critical_count_after | default('not_checked') }}"
+      compliance: "{{ idrac_update_compliance_report }}"
+      final_versions: "{{ idrac_update_firmware_versions_after | default(idrac_update_firmware_versions | default({})) }}"
+      firmware_verification: "{{ idrac_update_final_report }}"
+      install_results: "{{ idrac_update_install_results | default([]) }}"
+      report_status: "complete"
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Create latest update report directory  # noqa: run-once[task] risky-file-permissions
+  ansible.builtin.file:
+    path: "{{ idrac_update_report_latest_dir }}"
+    state: directory
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Create archive update report directory  # noqa: run-once[task] risky-file-permissions
+  ansible.builtin.file:
+    path: "{{ idrac_update_report_archive_dir }}"
+    state: directory
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+
+- name: Report | Reset consolidated update report data  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_summary_hosts: []
+    idrac_update_csv_rows: []
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Build consolidated update report data  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_summary_hosts: "{{ idrac_update_summary_hosts | default([]) + [hostvars[item].idrac_update_report_entry] }}"
+  loop: "{{ ansible_play_hosts_all }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - hostvars[item].idrac_update_report_entry is defined
+
+- name: Report | Build update CSV rows  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_csv_rows: "{{ idrac_update_csv_rows | default([]) + [idrac_update_csv_row] }}"
+  loop: "{{ hostvars.localhost.idrac_update_summary_hosts | default([]) | subelements('firmware_verification', skip_missing=true) }}"
+  loop_control:
+    label: "{{ item.0.inventory_hostname }} {{ item.1.name }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  vars:
+    idrac_update_csv_row:
+      inventory_hostname: "{{ item.0.inventory_hostname }}"
+      idrac_ip: "{{ item.0.idrac_ip }}"
+      mode: "{{ item.0.mode }}"
+      component_name: "{{ item.1.name }}"
+      before_version: "{{ item.1.before_version }}"
+      target_version: "{{ item.1.target_version }}"
+      expected_installed_version: "{{ item.1.expected_installed_version }}"
+      final_version: "{{ item.1.final_version }}"
+      action: "{{ item.1.action }}"
+      changed: "{{ item.1.changed }}"
+      skipped: "{{ item.1.skipped }}"
+      verification_passed: "{{ item.1.verification_passed }}"
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Export latest update summary JSON  # noqa: run-once[task]
+  ansible.builtin.copy:
+    content: >-
+      {{
+        {
+          'generated_at': now(utc=true).isoformat(),
+          'hosts': hostvars.localhost.idrac_update_summary_hosts | default([])
+        }
+        | to_nice_json
+      }}
+    dest: "{{ idrac_update_report_latest_dir }}/idrac_update_summary.json"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Export latest update summary CSV  # noqa: run-once[task]
+  ansible.builtin.copy:
+    content: |
+      inventory_hostname,idrac_ip,mode,component_name,before_version,target_version,expected_installed_version,final_version,action,changed,skipped,verification_passed
+      {% for row in hostvars.localhost.idrac_update_csv_rows | default([]) %}
+      {{
+        [
+          row.inventory_hostname,
+          row.idrac_ip,
+          row.mode,
+          row.component_name,
+          row.before_version,
+          row.target_version,
+          row.expected_installed_version,
+          row.final_version,
+          row.action,
+          row.changed,
+          row.skipped,
+          row.verification_passed
+        ] | map('to_json') | join(',')
+      }}
+      {% endfor %}
+    dest: "{{ idrac_update_report_latest_dir }}/idrac_update_summary.csv"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Export latest per-host update JSON  # noqa: run-once[task]
+  ansible.builtin.copy:
+    content: "{{ hostvars[item].idrac_update_report_entry | to_nice_json }}"
+    dest: "{{ idrac_update_report_latest_dir }}/{{ item }}.json"
+    mode: "0644"
+  loop: "{{ ansible_play_hosts_all }}"
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - hostvars[item].idrac_update_report_entry is defined
+
+- name: Report | Archive update summary JSON  # noqa: run-once[task]
+  ansible.builtin.copy:
+    src: "{{ idrac_update_report_latest_dir }}/idrac_update_summary.json"
+    dest: "{{ idrac_update_report_archive_dir }}/idrac_update_summary.json"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+
+- name: Report | Archive update summary CSV  # noqa: run-once[task]
+  ansible.builtin.copy:
+    src: "{{ idrac_update_report_latest_dir }}/idrac_update_summary.csv"
+    dest: "{{ idrac_update_report_archive_dir }}/idrac_update_summary.csv"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+
+- name: Report | Archive per-host update JSON  # noqa: run-once[task]
+  ansible.builtin.copy:
+    src: "{{ idrac_update_report_latest_dir }}/{{ item }}.json"
+    dest: "{{ idrac_update_report_archive_dir }}/{{ item }}.json"
+    mode: "0644"
+  loop: "{{ ansible_play_hosts_all }}"
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+    - hostvars[item].idrac_update_report_entry is defined
+
+- name: Report | Show update report location  # noqa: run-once[task]
+  ansible.builtin.debug:
+    msg: |
+      Reports written to:
+      {{ idrac_update_report_latest_dir }}
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report upload | Validate Wasabi upload settings  # noqa: run-once[task]
+  ansible.builtin.assert:
+    that:
+      - idrac_report_upload_provider == 'wasabi'
+      - idrac_report_bucket | length > 0
+      - idrac_report_prefix | length > 0
+      - idrac_report_s3_endpoint_url | length > 0
+      - idrac_report_s3_profile | length > 0
+      - idrac_report_s3_cli_path | length > 0
+    fail_msg: >-
+      Wasabi report upload is enabled, but one or more upload settings are missing.
+      Required: idrac_report_bucket, idrac_report_prefix,
+      idrac_report_s3_endpoint_url, idrac_report_s3_profile, idrac_report_s3_cli_path.
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_report_upload_enabled | bool
+
+- name: Report upload | Check AWS CLI is available for update reports  # noqa: run-once[task]
+  ansible.builtin.command:
+    cmd: "{{ idrac_report_s3_cli_path }} --version"
+  register: idrac_update_report_aws_cli_check
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_report_upload_enabled | bool
+
+- name: Report upload | Upload latest update reports to Wasabi  # noqa: run-once[task]
+  ansible.builtin.command:
+    argv:
+      - "{{ idrac_report_s3_cli_path }}"
+      - s3
+      - sync
+      - "{{ idrac_update_report_latest_dir }}/"
+      - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/idrac-update/latest/"
+      - --endpoint-url
+      - "{{ idrac_report_s3_endpoint_url }}"
+      - --profile
+      - "{{ idrac_report_s3_profile }}"
+  register: idrac_update_report_latest_upload
+  changed_when: false
+  no_log: true
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_report_upload_enabled | bool
+
+- name: Report upload | Upload archived update reports to Wasabi  # noqa: run-once[task]
+  ansible.builtin.command:
+    argv:
+      - "{{ idrac_report_s3_cli_path }}"
+      - s3
+      - sync
+      - "{{ idrac_update_report_archive_dir }}/"
+      - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/idrac-update/archive/{{ idrac_update_report_timestamp }}/"
+      - --endpoint-url
+      - "{{ idrac_report_s3_endpoint_url }}"
+      - --profile
+      - "{{ idrac_report_s3_profile }}"
+  register: idrac_update_report_archive_upload
+  changed_when: false
+  no_log: true
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_report_upload_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+
+- name: Report upload | Show update report upload location  # noqa: run-once[task]
+  ansible.builtin.debug:
+    msg:
+      reports_uploaded_to:
+        - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/idrac-update/latest/"
+        - >-
+          {{
+            's3://' ~ idrac_report_bucket ~ '/' ~ idrac_report_prefix ~
+            '/idrac-update/archive/' ~ idrac_update_report_timestamp ~ '/'
+            if idrac_update_report_archive_enabled | bool
+            else 'archive upload disabled'
+          }}
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_report_upload_enabled | bool

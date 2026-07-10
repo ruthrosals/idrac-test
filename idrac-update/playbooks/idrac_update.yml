@@ -1,0 +1,10 @@
+---
+- name: Update iDRAC firmware using Redfish
+  hosts: dell_idrac
+  gather_facts: false
+  connection: local
+  serial: "{{ idrac_update_serial | default(1) }}"
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  roles:
+    - role: ../roles/idrac_update # noqa: role-name[path]
