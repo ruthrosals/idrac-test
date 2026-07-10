@@ -63,15 +63,21 @@ Quoted commas inside CSV fields are not supported.
 
 Download the approved Dell DUP firmware packages manually from the approved Dell source or internal package process.
 
-### Step 2 - Place packages on the tools server
+### Step 2 - Place downloaded packages in the staging folder
 
-Place the downloaded packages under:
+Place newly downloaded Dell DUP packages under the staging folder:
 
 ```bash
 /home/cloudadm/packages/
 ```
 
-Example package paths:
+The helper script copies them into the served Nginx firmware repository:
+
+```bash
+/opt/firmware-repo/dell/<component>/<version>/
+```
+
+Example staging package paths:
 
 ```text
 /home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_WPNPP_WN64_5.10.30.00_A00.EXE
