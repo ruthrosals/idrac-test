@@ -1,6 +1,6 @@
 # Firmware Package Workflow
 
-This helper workflow is maintained in Git under `idrac-update/scripts/add_firmware_packages_from_csv.sh`. The repository copy is the source of truth. The script can be copied to the tools server later for operator convenience, but changes should be made in Git first.
+This helper workflow is maintained in Git under `scripts/add_firmware_packages_from_csv.sh`. The repository copy is the source of truth. The script can be copied to the tools server later for operator convenience, but changes should be made in Git first.
 
 ## Purpose
 
@@ -16,7 +16,9 @@ sudo chmod 750 /usr/local/sbin/add-firmware-packages
 sudo chown root:cloudadm /usr/local/sbin/add-firmware-packages
 ```
 
-## CSV Format
+## CSV Template
+
+Use `examples/firmware_packages.csv` as the template. Operators should copy or edit this file before each maintenance window.
 
 The CSV must use this header:
 
@@ -24,11 +26,13 @@ The CSV must use this header:
 component,version,source_file,target_version,name,transfer_protocol
 ```
 
-Example:
+Working example:
 
 ```csv
+component,version,source_file,target_version,name,transfer_protocol
 idrac,5.10.30.00,/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_WPNPP_WN64_5.10.30.00_A00.EXE,5.10.30.00,iDRAC,HTTP
 diagnostics,4301.74,/home/cloudadm/packages/Diagnostics_Application_R30YT_WN64_4301A73_4301.74_01.EXE,4301.74,diagnostics,HTTP
+lifecycle_controller,5.10.30.00,/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_WPNPP_WN64_5.10.30.00_A00.EXE,5.10.30.00,Lifecycle Controller,HTTP
 ```
 
 Allowed components:
@@ -49,30 +53,69 @@ Field meaning:
 - `name`: playbook item name
 - `transfer_protocol`: `HTTP` by default when empty
 
+For most routine updates, operators normally change only `source_file`, `version`, and `target_version`. Keep `component`, `name`, and `transfer_protocol` consistent with the playbook item being updated unless a new component is intentionally being added.
+
 Quoted commas inside CSV fields are not supported.
 
-## Operator Workflow
+## Complete Operator Workflow
 
-1. Download approved Dell firmware packages manually.
-2. Save the packages on the tools server, for example under `/home/cloudadm/packages`.
-3. Fill out the CSV file using `idrac-update/examples/firmware_packages.csv` as a template.
-4. Run the helper script:
+### Step 1 - Download approved Dell DUP packages
+
+Download the approved Dell DUP firmware packages manually from the approved Dell source or internal package process.
+
+### Step 2 - Place packages on the tools server
+
+Place the downloaded packages under:
 
 ```bash
-idrac-update/scripts/add_firmware_packages_from_csv.sh idrac-update/examples/firmware_packages.csv
+/home/cloudadm/packages/
 ```
 
-The script will:
+Example package paths:
 
-- copy packages to `/opt/firmware-repo/dell/<component>/<version>/`
-- set ownership to `cloudadm:cloudadm`
-- set directory permissions to `755`
-- set package file permissions to `644`
-- test each Nginx firmware URL with `curl -fsSI`
-- sync `/opt/firmware-repo/dell` to Wasabi
-- verify each uploaded Wasabi object with `aws s3 ls`
-- generate `/tmp/idrac_update_items_generated.json`
-- print the generated JSON to stdout
+```text
+/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_WPNPP_WN64_5.10.30.00_A00.EXE
+/home/cloudadm/packages/Diagnostics_Application_R30YT_WN64_4301A73_4301.74_01.EXE
+```
+
+### Step 3 - Edit the CSV template
+
+Edit:
+
+```bash
+examples/firmware_packages.csv
+```
+
+Confirm every row has the correct component, version, local source file, target version, playbook item name, and transfer protocol.
+
+### Step 4 - Execute the helper script
+
+Run the script from the repository root:
+
+```bash
+scripts/add_firmware_packages_from_csv.sh examples/firmware_packages.csv
+```
+
+The script processes every row in the CSV in one execution.
+
+### Step 5 - Review the automated output
+
+The script automatically:
+
+- copies packages into the Nginx firmware repository
+- creates version directories
+- applies ownership and permissions
+- validates each firmware URL via Nginx
+- synchronizes the firmware repository to Wasabi
+- verifies uploaded objects
+- generates the `idrac_update_items` JSON
+- prints the JSON for copy/paste into Semaphore
+
+The generated JSON is also written to:
+
+```bash
+/tmp/idrac_update_items_generated.json
+```
 
 ## Validation Notes
 
@@ -90,7 +133,7 @@ aws s3 ls s3://breqwatr-firmware-repo/firmware/dell/idrac/5.10.30.00/iDRAC-with-
   --endpoint-url https://s3.ca-central-1.wasabisys.com
 ```
 
-Confirm the generated JSON is pasted into the Semaphore variable group.
+Confirm the generated JSON from `/tmp/idrac_update_items_generated.json` is pasted into the Semaphore variable group.
 
 ## Retention Guidance
 

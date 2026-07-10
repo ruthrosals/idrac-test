@@ -11,7 +11,15 @@ This directory contains the iDRAC firmware update role, discovery playbook, repo
 
 ## Firmware Package Onboarding
 
-Bulk package onboarding is handled by:
+Use `examples/firmware_packages.csv` as the package onboarding template. Operators should copy or edit this file with the approved Dell DUP packages for the maintenance window.
+
+For most package updates, only these fields normally need to change:
+
+- `source_file`: local path to the downloaded Dell DUP package
+- `version`: destination version folder under `/opt/firmware-repo/dell/<component>/`
+- `target_version`: version value used by the Semaphore `idrac_update_items` variable
+
+The helper script processes every CSV row in one execution:
 
 ```bash
 scripts/add_firmware_packages_from_csv.sh examples/firmware_packages.csv
@@ -23,4 +31,4 @@ The helper copies approved Dell firmware packages into the Nginx firmware reposi
 
 Generated reports are written to `/var/tmp/idrac-update-reports` and may optionally be uploaded to Wasabi. Firmware packages remain served to iDRAC through Nginx.
 
-`requirements.yml` remains at the `idrac-update/` root.
+`requirements.yml` remains at the repository root.
