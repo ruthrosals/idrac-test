@@ -19,7 +19,7 @@ sudo chown root:cloudadm /usr/local/sbin/add-firmware-packages
 Standard deployed execution command:
 
 ```bash
-sudo /usr/local/sbin/add-firmware-packages /home/cloudadm/examples/firmware_packages.csv
+sudo /usr/local/sbin/add-firmware-packages/add_firmware_packages_from_csv.sh /home/cloudadm/examples/firmware_packages.csv
 ```
 
 ## CSV Template
