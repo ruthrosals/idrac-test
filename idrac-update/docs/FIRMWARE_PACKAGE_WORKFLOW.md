@@ -111,7 +111,7 @@ scripts/add_firmware_packages_from_csv.sh examples/firmware_packages.csv
 Run the deployed helper on the tools host with:
 
 ```bash
-sudo /usr/local/sbin/add-firmware-packages /home/cloudadm/examples/firmware_packages.csv
+sudo /usr/local/sbin/add-firmware-packages/add_firmware_packages_from_csv.sh /home/cloudadm/examples/firmware_packages.csv
 ```
 
 The script processes every row in the CSV in one execution.
