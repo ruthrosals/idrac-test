@@ -6,7 +6,7 @@ This helper workflow is maintained in Git under `scripts/add_firmware_packages_f
 
 Operators prepare one CSV file with approved Dell firmware packages. The script copies those packages into the Nginx firmware repository, validates the HTTP download URL, syncs the firmware repository to Wasabi, verifies the uploaded objects, and generates the `idrac_update_items` JSON block for Semaphore.
 
-Nginx remains the active firmware source for iDRAC. Wasabi is the archive and recovery source.
+Nginx remains the active firmware source for iDRAC. Wasabi is the archive and recovery source. The script runs directly on the tools host, not inside the Nginx container.
 
 ## Optional Deployment Copy
 
@@ -14,6 +14,12 @@ Nginx remains the active firmware source for iDRAC. Wasabi is the archive and re
 sudo cp scripts/add_firmware_packages_from_csv.sh /usr/local/sbin/add-firmware-packages
 sudo chmod 750 /usr/local/sbin/add-firmware-packages
 sudo chown root:cloudadm /usr/local/sbin/add-firmware-packages
+```
+
+Standard deployed execution command:
+
+```bash
+sudo /usr/local/sbin/add-firmware-packages /home/cloudadm/examples/firmware_packages.csv
 ```
 
 ## CSV Template
@@ -96,10 +102,16 @@ Confirm every row has the correct component, version, local source file, target 
 
 ### Step 4 - Execute the helper script
 
-Run the script from the repository root:
+Run the script from the repository root during development or testing:
 
 ```bash
 scripts/add_firmware_packages_from_csv.sh examples/firmware_packages.csv
+```
+
+Run the deployed helper on the tools host with:
+
+```bash
+sudo /usr/local/sbin/add-firmware-packages /home/cloudadm/examples/firmware_packages.csv
 ```
 
 The script processes every row in the CSV in one execution.
@@ -108,6 +120,7 @@ The script processes every row in the CSV in one execution.
 
 The script automatically:
 
+- validates the AWS profile and Wasabi bucket before modifying the firmware repository
 - copies packages into the Nginx firmware repository
 - creates version directories
 - applies ownership and permissions
@@ -147,6 +160,6 @@ Keep the current approved firmware plus the previous three approved versions. Ke
 
 ## Notes
 
-The script does not include credentials or secrets. It expects AWS CLI and the `wasabi` profile to already be configured on the tools server.
+The script does not include credentials or secrets. It expects AWS CLI and the `wasabi` profile to already be configured for the invoking operator on the tools server. When run with `sudo`, it uses the original operator's AWS config and credentials files.
 
 ShellCheck compatibility is intended, but ShellCheck is not required to run the script.

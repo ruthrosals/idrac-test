@@ -10,6 +10,10 @@ OUTPUT_JSON="/tmp/idrac_update_items_generated.json"
 
 ALLOWED_COMPONENTS=" idrac diagnostics lifecycle_controller bios nic perc "
 
+TMP_JSON_ITEMS=""
+declare -a uploaded_objects=()
+declare -a copied_new_files=()
+
 usage() {
   echo "Usage: $0 <firmware_packages.csv>" >&2
   exit 1
@@ -42,15 +46,81 @@ validate_component() {
   fi
 }
 
+cleanup() {
+  local exit_code=$?
+
+  if [[ -n "${TMP_JSON_ITEMS:-}" ]]; then
+    rm -f "$TMP_JSON_ITEMS"
+  fi
+
+  if [[ $exit_code -ne 0 && ${#copied_new_files[@]} -gt 0 ]]; then
+    echo "WARNING: The script failed after copying new local package files." >&2
+    echo "WARNING: Newly added files were left in place and were not automatically deleted:" >&2
+    printf '  %s\n' "${copied_new_files[@]}" >&2
+  fi
+}
+
+run_aws() {
+  AWS_CONFIG_FILE="$AWS_CONFIG_FILE_PATH" \
+  AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDENTIALS_FILE_PATH" \
+  aws "$@"
+}
+
+validate_aws_profile() {
+  local profile_found=false
+  local profile
+
+  while IFS= read -r profile; do
+    if [[ "$profile" == "$AWS_PROFILE" ]]; then
+      profile_found=true
+      break
+    fi
+  done < <(run_aws configure list-profiles)
+
+  if [[ "$profile_found" != true ]]; then
+    cat >&2 <<ERROR
+ERROR: AWS profile '$AWS_PROFILE' was not found using:
+  config: $AWS_CONFIG_FILE_PATH
+  credentials: $AWS_CREDENTIALS_FILE_PATH
+ERROR
+    exit 1
+  fi
+}
+
+trap cleanup EXIT
+
 require_command aws
 require_command basename
 require_command chown
 require_command chmod
+require_command cut
 require_command cp
 require_command curl
-require_command dirname
 require_command find
+require_command getent
+require_command id
 require_command sed
+
+RUN_USER="${SUDO_USER:-$(id -un)}"
+if [[ -z "$RUN_USER" ]]; then
+  echo "ERROR: Unable to determine invoking user." >&2
+  exit 1
+fi
+
+user_entry=""
+if ! user_entry="$(getent passwd "$RUN_USER")"; then
+  echo "ERROR: Unable to determine system account for invoking user '$RUN_USER'." >&2
+  exit 1
+fi
+
+RUN_USER_HOME="$(printf '%s' "$user_entry" | cut -d: -f6)"
+if [[ -z "$RUN_USER_HOME" || ! -d "$RUN_USER_HOME" ]]; then
+  echo "ERROR: Unable to determine home directory for user '$RUN_USER'." >&2
+  exit 1
+fi
+
+AWS_CONFIG_FILE_PATH="${AWS_CONFIG_FILE_PATH:-${RUN_USER_HOME}/.aws/config}"
+AWS_CREDENTIALS_FILE_PATH="${AWS_CREDENTIALS_FILE_PATH:-${RUN_USER_HOME}/.aws/credentials}"
 
 if [[ $# -ne 1 ]]; then
   usage
@@ -62,14 +132,33 @@ if [[ ! -f "$CSV_FILE" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$AWS_CONFIG_FILE_PATH" ]]; then
+  echo "ERROR: AWS config file not found: $AWS_CONFIG_FILE_PATH" >&2
+  exit 1
+fi
+
+if [[ ! -f "$AWS_CREDENTIALS_FILE_PATH" ]]; then
+  echo "ERROR: AWS credentials file not found: $AWS_CREDENTIALS_FILE_PATH" >&2
+  exit 1
+fi
+
+validate_aws_profile
+if ! run_aws s3 ls "s3://$BUCKET" \
+  --profile "$AWS_PROFILE" \
+  --endpoint-url "$WASABI_ENDPOINT" >/dev/null; then
+  echo "ERROR: Unable to reach Wasabi bucket s3://$BUCKET using profile '$AWS_PROFILE'." >&2
+  echo "ERROR: AWS files used:" >&2
+  echo "  config: $AWS_CONFIG_FILE_PATH" >&2
+  echo "  credentials: $AWS_CREDENTIALS_FILE_PATH" >&2
+  exit 1
+fi
+echo "AWS pre-flight passed: profile=$AWS_PROFILE bucket=s3://$BUCKET user=$RUN_USER"
+
 TMP_JSON_ITEMS="$(mktemp)"
-trap 'rm -f "$TMP_JSON_ITEMS"' EXIT
 : > "$TMP_JSON_ITEMS"
 
 processed_count=0
 line_number=0
-
-declare -a uploaded_objects=()
 
 while IFS=, read -r component version source_file target_version name transfer_protocol extra_field || [[ -n "${component:-}" ]]; do
   line_number=$((line_number + 1))
@@ -119,9 +208,19 @@ while IFS=, read -r component version source_file target_version name transfer_p
   destination_file="$destination_dir/$filename"
   firmware_url="$NGINX_BASE_URL/$component/$version/$filename"
   wasabi_object="s3://$BUCKET/firmware/dell/$component/$version/$filename"
+  destination_existed=false
+
+  if [[ -e "$destination_file" ]]; then
+    destination_existed=true
+  fi
 
   mkdir -p "$destination_dir"
   cp "$source_file" "$destination_file"
+
+  if [[ "$destination_existed" == false ]]; then
+    copied_new_files+=("$destination_file")
+  fi
+
   chown -R cloudadm:cloudadm "$destination_dir"
   find "$FIRMWARE_ROOT/$component" -type d -exec chmod 755 {} +
   chmod 644 "$destination_file"
@@ -153,13 +252,13 @@ if [[ $processed_count -eq 0 ]]; then
   exit 1
 fi
 
-aws s3 sync "$FIRMWARE_ROOT" "s3://$BUCKET/firmware/dell" \
+run_aws s3 sync "$FIRMWARE_ROOT" "s3://$BUCKET/firmware/dell" \
   --profile "$AWS_PROFILE" \
   --endpoint-url "$WASABI_ENDPOINT"
 echo "Wasabi sync completed: s3://$BUCKET/firmware/dell"
 
 for wasabi_object in "${uploaded_objects[@]}"; do
-  aws s3 ls "$wasabi_object" \
+  run_aws s3 ls "$wasabi_object" \
     --profile "$AWS_PROFILE" \
     --endpoint-url "$WASABI_ENDPOINT" >/dev/null
   echo "Wasabi object verified: $wasabi_object"
