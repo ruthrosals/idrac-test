@@ -565,27 +565,6 @@
       drift: "{{ drift }}"
       action: "{{ firmware_action | trim }}"
 
-- name: Temporary debug | Show firmware approval inputs before install plan
-  ansible.builtin.debug:
-    msg:
-      host: "{{ inventory_hostname }}"
-      idrac_update_approved_components: "{{ idrac_update_approved_components }}"
-      idrac_update_disallowed_components: "{{ idrac_update_disallowed_components }}"
-      idrac_update_approved_component_set: "{{ idrac_update_approved_component_set }}"
-      idrac_update_disallowed_component_set: "{{ idrac_update_disallowed_component_set }}"
-      requested_normalized_components: "{{ idrac_update_items_normalized | map(attribute='name_normalized') | list }}"
-
-- name: Temporary debug | Show requested firmware item approval checks before install plan
-  ansible.builtin.debug:
-    msg:
-      item.name: "{{ item.name }}"
-      item.normalized_name: "{{ item.name_normalized }}"
-      normalized_name in idrac_update_approved_component_set: "{{ item.name_normalized in idrac_update_approved_component_set }}"
-      normalized_name in idrac_update_disallowed_component_set: "{{ item.name_normalized in idrac_update_disallowed_component_set }}"
-  loop: "{{ idrac_update_items_normalized }}"
-  loop_control:
-    label: "{{ item.name }}"
-
 - name: Pre-flight | Build firmware install plan
   ansible.builtin.set_fact:
     idrac_update_install_plan: "{{ idrac_update_install_plan + [idrac_update_install_plan_item] }}"
