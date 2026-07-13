@@ -47,6 +47,7 @@
       results: []
     idrac_update_firmware_versions: {}
     idrac_update_firmware_versions_after: {}
+    idrac_update_compliance: []
     idrac_update_compliance_report: []
     idrac_update_install_plan: []
     idrac_update_install_results: []
@@ -526,7 +527,7 @@
 
 - name: Pre-flight | Build component compliance report
   ansible.builtin.set_fact:
-    idrac_update_compliance_report: "{{ idrac_update_compliance_report | default([]) + [compliance_item] }}"
+    idrac_update_compliance: "{{ idrac_update_compliance | default([]) + [compliance_item] }}"
   loop: "{{ idrac_update_items_normalized }}"
   vars:
     applicable: "{{ item.name_normalized in idrac_update_firmware_versions }}"
@@ -551,6 +552,15 @@
       {% elif item.allow_downgrade | default(false) | bool or item.force_update | default(false) | bool %}upgrade_required
       {% else %}version_mismatch
       {% endif %}
+    should_install: >-
+      {{
+        item.name_normalized in idrac_update_approved_component_set
+        and item.name_normalized not in idrac_update_disallowed_component_set
+        and item.name_normalized in idrac_update_firmware_versions
+        and current_version != 'UNKNOWN'
+        and current_version != expected_version
+        and (item.allow_downgrade | default(false) | bool or item.force_update | default(false) | bool)
+      }}
     compliance_item:
       name: "{{ item.name }}"
       component: "{{ item.name_normalized }}"
@@ -558,58 +568,6 @@
       current_version: "{{ current_version }}"
       target_version: "{{ item.target_version }}"
       expected_installed_version: "{{ expected_version }}"
-      applicability: "{{ 'applicable' if item.name_normalized in idrac_update_firmware_versions else 'not_applicable' }}"
-      approved: "{{ approved }}"
-      excluded: "{{ excluded }}"
-      allow_downgrade: "{{ allow_downgrade }}"
-      drift: "{{ drift }}"
-      action: "{{ firmware_action | trim }}"
-
-- name: Pre-flight | Build firmware install plan
-  ansible.builtin.set_fact:
-    idrac_update_install_plan: "{{ idrac_update_install_plan + [idrac_update_install_plan_item] }}"
-  loop: "{{ idrac_update_items_normalized }}"
-  loop_control:
-    label: "{{ item.name }}"
-  vars:
-    applicable: "{{ item.name_normalized in idrac_update_firmware_versions }}"
-    current_version: >-
-      {{
-        idrac_update_firmware_versions[item.name_normalized]
-        if item.name_normalized in idrac_update_firmware_versions
-        else 'NOT_APPLICABLE'
-      }}
-    expected_installed_version: "{{ item.installed_version | default(item.target_version) }}"
-    approved: "{{ item.name_normalized in idrac_update_approved_component_set }}"
-    excluded: "{{ item.name_normalized in idrac_update_disallowed_component_set }}"
-    allow_downgrade: "{{ item.allow_downgrade | default(false) | bool }}"
-    force_update: "{{ item.force_update | default(false) | bool }}"
-    drift: "{{ current_version != expected_installed_version }}"
-    firmware_action: >-
-      {% if item.name_normalized in idrac_update_disallowed_component_set %}excluded
-      {% elif item.name_normalized not in idrac_update_approved_component_set %}excluded
-      {% elif item.name_normalized not in idrac_update_firmware_versions %}not_applicable
-      {% elif current_version == 'UNKNOWN' %}unknown
-      {% elif current_version == expected_installed_version %}compliant
-      {% elif item.allow_downgrade | default(false) | bool or item.force_update | default(false) | bool %}upgrade_required
-      {% else %}version_mismatch
-      {% endif %}
-    should_install: >-
-      {{
-        item.name_normalized in idrac_update_approved_component_set
-        and item.name_normalized not in idrac_update_disallowed_component_set
-        and item.name_normalized in idrac_update_firmware_versions
-        and current_version != 'UNKNOWN'
-        and current_version != expected_installed_version
-        and (item.allow_downgrade | default(false) | bool or item.force_update | default(false) | bool)
-      }}
-    idrac_update_install_plan_item:
-      name: "{{ item.name }}"
-      normalized_name: "{{ item.name_normalized }}"
-      component: "{{ item.name_normalized }}"
-      current_version: "{{ current_version }}"
-      target_version: "{{ item.target_version }}"
-      expected_installed_version: "{{ expected_installed_version }}"
       firmware_image_uri: "{{ item.firmware_image_uri }}"
       transfer_protocol: "{{ item.transfer_protocol }}"
       applicability: "{{ 'applicable' if item.name_normalized in idrac_update_firmware_versions else 'not_applicable' }}"
@@ -622,6 +580,29 @@
       should_install: "{{ should_install }}"
       skip_reason: "{{ firmware_action | trim }}"
 
+- name: Pre-flight | Publish component compliance report
+  ansible.builtin.set_fact:
+    idrac_update_compliance_report: "{{ idrac_update_compliance }}"
+
+- name: Pre-flight | Build firmware install plan
+  ansible.builtin.set_fact:
+    idrac_update_install_plan: "{{ idrac_update_install_plan + [item] }}"
+  loop: "{{ idrac_update_compliance }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Pre-flight | Validate install plan approval consistency
+  ansible.builtin.assert:
+    that:
+      - item.approved == (item.normalized_name in idrac_update_approved_component_set)
+    fail_msg: >-
+      Install plan approval mismatch.
+      normalized_name={{ item.normalized_name }}
+      approved={{ item.approved }}
+      approved_component_set={{ idrac_update_approved_component_set }}
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.normalized_name }}"
 
 - name: Apply mode | Fail if requested component is outside non-disruptive scope
   ansible.builtin.fail:
