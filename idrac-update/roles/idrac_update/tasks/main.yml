@@ -158,6 +158,30 @@
   ansible.builtin.set_fact:
     idrac_update_requested_component_names: "{{ idrac_update_items_normalized | map(attribute='name_normalized') | list }}"
 
+- name: Pre-flight | Report normalized firmware component scope
+  ansible.builtin.debug:
+    msg:
+      normalized_approved_component_set: "{{ idrac_update_approved_component_set }}"
+      normalized_disallowed_component_set: "{{ idrac_update_disallowed_component_set }}"
+      requested_canonical_component_list: "{{ idrac_update_requested_component_names }}"
+  when: idrac_update_mode == 'apply'
+
+- name: Pre-flight | Fail if no requested firmware components are approved
+  ansible.builtin.assert:
+    that:
+      - idrac_update_requested_component_names | intersect(idrac_update_approved_component_set) | length > 0
+    fail_msg: >-
+      No requested firmware components are approved. Requested:
+      {{ idrac_update_requested_component_names }}.
+      Approved:
+      {{ idrac_update_approved_component_set }}.
+      Disallowed:
+      {{ idrac_update_disallowed_component_set }}.
+      Check Semaphore variable group values.
+  when:
+    - idrac_update_mode == 'apply'
+    - idrac_update_items | length > 0
+
 - name: Validate requested canonical components are unique
   ansible.builtin.assert:
     that:
