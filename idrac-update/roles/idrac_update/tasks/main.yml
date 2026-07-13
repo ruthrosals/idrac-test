@@ -1,4 +1,18 @@
 ---
+- name: Normalize requested update mode
+  ansible.builtin.set_fact:
+    idrac_update_mode_input: "{{ idrac_update_mode | default('check') }}"
+    idrac_update_mode: >-
+      {{
+        idrac_update_mode
+        | default('check')
+        | string
+        | trim
+        | lower
+        | regex_replace('^"|"$', '')
+        | regex_replace("^'|'$", '')
+      }}
+
 - name: Validate required variables
   ansible.builtin.assert:
     that:
@@ -57,8 +71,22 @@
 
 - name: Normalize approved/disallowed component names
   ansible.builtin.set_fact:
-    idrac_update_approved_component_set: "{{ idrac_update_approved_components | map('lower') | map('regex_replace', '\\s+', '_') | list }}"
-    idrac_update_disallowed_component_set: "{{ idrac_update_disallowed_components | map('lower') | map('regex_replace', '\\s+', '_') | list }}"
+    idrac_update_approved_component_set: >-
+      {{
+        idrac_update_approved_components
+        | map('lower')
+        | map('regex_replace', '[^a-z0-9]+', '_')
+        | map('regex_replace', '^_+|_+$', '')
+        | list
+      }}
+    idrac_update_disallowed_component_set: >-
+      {{
+        idrac_update_disallowed_components
+        | map('lower')
+        | map('regex_replace', '[^a-z0-9]+', '_')
+        | map('regex_replace', '^_+|_+$', '')
+        | list
+      }}
 
 - name: Initialize normalized update items
   ansible.builtin.set_fact:
@@ -70,7 +98,7 @@
       {{
         idrac_update_items_normalized
         + [(item | combine({
-          'name_normalized': (item.name | lower | regex_replace('\\s+', '_')),
+          'name_normalized': (item.name | lower | regex_replace('[^a-z0-9]+', '_') | regex_replace('^_+|_+$', '')),
           'transfer_protocol': item.transfer_protocol | default('HTTP')
         }))]
       }}
@@ -354,7 +382,7 @@
   loop: "{{ idrac_update_firmware_inventory }}"
   vars:
     idrac_update_component_name: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) }}"
-    idrac_update_component_name_normalized: "{{ idrac_update_component_name | lower | regex_replace('\\s+', '_') }}"
+    idrac_update_component_name_normalized: "{{ idrac_update_component_name | lower | regex_replace('[^a-z0-9]+', '_') | regex_replace('^_+|_+$', '') }}"
     idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
     idrac_update_firmware_alias: >-
       {{
@@ -441,6 +469,17 @@
       drift: "{{ drift }}"
       should_install: "{{ should_install }}"
       skip_reason: "{{ skip_reason }}"
+
+- name: Apply mode | Debug apply mode evaluation
+  ansible.builtin.debug:
+    msg:
+      idrac_update_mode_input: "{{ idrac_update_mode_input | default('undefined') }}"
+      idrac_update_mode: "{{ idrac_update_mode }}"
+      ansible_check_mode: "{{ ansible_check_mode }}"
+      apply_condition: "{{ idrac_update_mode == 'apply' }}"
+      install_plan_length: "{{ idrac_update_install_plan | length }}"
+      install_plan_should_install_count: >-
+        {{ idrac_update_install_plan | selectattr('should_install', 'equalto', true) | list | length }}
 
 - name: Apply mode | Show firmware install plan
   ansible.builtin.debug:
@@ -832,7 +871,7 @@
   loop: "{{ idrac_update_firmware_inventory_after }}"
   vars:
     idrac_update_component_name: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) }}"
-    idrac_update_component_name_normalized: "{{ idrac_update_component_name | lower | regex_replace('\\s+', '_') }}"
+    idrac_update_component_name_normalized: "{{ idrac_update_component_name | lower | regex_replace('[^a-z0-9]+', '_') | regex_replace('^_+|_+$', '') }}"
     idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
     idrac_update_firmware_alias: >-
       {{
