@@ -1,0 +1,183 @@
+---
+- name: Validate iDRAC update firmware decision rules
+  hosts: localhost
+  gather_facts: false
+  vars:
+    idrac_update_approved_component_set:
+      - idrac_lifecycle_controller
+      - uefi_diagnostics
+      - os_driver_pack
+    idrac_update_disallowed_component_set:
+      - bios
+      - perc
+      - nic
+      - disk_firmware
+      - cpld
+    normalization_cases:
+      - input: iDRAC
+        expected: idrac_lifecycle_controller
+      - input: Integrated Dell Remote Access Controller
+        expected: idrac_lifecycle_controller
+      - input: Lifecycle Controller
+        expected: idrac_lifecycle_controller
+      - input: iDRAC with Lifecycle Controller
+        expected: idrac_lifecycle_controller
+      - input: idrac_lifecycle_controller
+        expected: idrac_lifecycle_controller
+      - input: UEFI Diagnostics
+        expected: uefi_diagnostics
+      - input: Dell 64 Bit UEFI Diagnostics
+        expected: uefi_diagnostics
+      - input: 64 Bit UEFI Diagnostics
+        expected: uefi_diagnostics
+      - input: OS Driver Pack
+        expected: os_driver_pack
+      - input: Dell OS Driver Pack
+        expected: os_driver_pack
+      - input: Drivers for OS Deployment
+        expected: os_driver_pack
+      - input: BIOS
+        expected: bios
+    decision_cases:
+      - name: compliant
+        current_version: 7.00.00.184
+        expected_installed_version: 7.00.00.184
+        component_present: true
+        allow_downgrade: false
+        expected_action: compliant
+        expected_should_install: false
+      - name: not_applicable
+        current_version: NOT_APPLICABLE
+        expected_installed_version: 4301A73
+        component_present: false
+        allow_downgrade: false
+        expected_action: not_applicable
+        expected_should_install: false
+      - name: version_mismatch_without_downgrade
+        current_version: 7.00.00.184
+        expected_installed_version: 5.10.30.00
+        component_present: true
+        allow_downgrade: false
+        expected_action: version_mismatch
+        expected_should_install: false
+      - name: version_mismatch_with_downgrade
+        current_version: 7.00.00.184
+        expected_installed_version: 5.10.30.00
+        component_present: true
+        allow_downgrade: true
+        expected_action: upgrade_required
+        expected_should_install: true
+  tasks:
+    - name: Validate canonical component normalization cases
+      ansible.builtin.assert:
+        that:
+          - actual | trim == item.expected
+        fail_msg: >-
+          Normalization failed for {{ item.input }}. Expected={{ item.expected }}, actual={{ actual }}.
+      loop: "{{ normalization_cases }}"
+      loop_control:
+        label: "{{ item.input }}"
+      vars:
+        key: >-
+          {{
+            item.input
+            | lower
+            | trim
+            | regex_replace('[^a-z0-9]+', '_')
+            | regex_replace('_+', '_')
+            | regex_replace('^_+|_+$', '')
+          }}
+        actual: >-
+          {{
+            'idrac_lifecycle_controller'
+            if key in [
+              'idrac',
+              'integrated_dell_remote_access_controller',
+              'lifecycle_controller',
+              'idrac_with_lifecycle_controller',
+              'idrac_lifecycle_controller'
+            ]
+            else 'uefi_diagnostics'
+            if key in [
+              'diagnostics',
+              'uefi_diagnostics',
+              'dell_64_bit_uefi_diagnostics',
+              '64_bit_uefi_diagnostics'
+            ]
+            else 'os_driver_pack'
+            if key in [
+              'os_driver_pack',
+              'dell_os_driver_pack',
+              'drivers_for_os_deployment'
+            ]
+            else 'disk_firmware'
+            if 'disk' in key
+            else 'cpld'
+            if key == 'cpld' or key == 'system_cpld'
+            else 'perc'
+            if 'perc' in key
+            else 'nic'
+            if key == 'nic' or 'ethernet' in key or 'network' in key
+            else key
+          }}
+
+    - name: Validate duplicate canonical component rejection rule
+      ansible.builtin.assert:
+        that:
+          - requested_components | length != requested_components | unique | length
+        fail_msg: "Duplicate canonical component rejection rule failed."
+      vars:
+        requested_components:
+          - uefi_diagnostics
+          - uefi_diagnostics
+
+    - name: Validate disallowed component rejection rule
+      ansible.builtin.assert:
+        that:
+          - bios_disallowed | bool
+          - perc_disallowed | bool
+          - nic_disallowed | bool
+          - disk_disallowed | bool
+          - cpld_disallowed | bool
+        fail_msg: "Disallowed component rejection rule failed."
+      vars:
+        bios_disallowed: "{{ 'bios' in idrac_update_disallowed_component_set }}"
+        perc_disallowed: "{{ 'perc' in idrac_update_disallowed_component_set }}"
+        nic_disallowed: "{{ 'nic' in idrac_update_disallowed_component_set }}"
+        disk_disallowed: "{{ 'disk_firmware' in idrac_update_disallowed_component_set }}"
+        cpld_disallowed: "{{ 'cpld' in idrac_update_disallowed_component_set }}"
+
+    - name: Validate firmware decision cases
+      ansible.builtin.assert:
+        that:
+          - firmware_action | trim == item.expected_action
+          - should_install | bool == item.expected_should_install
+        fail_msg: >-
+          Decision rule failed for {{ item.name }}.
+          Expected action={{ item.expected_action }}, actual action={{ firmware_action | trim }}.
+          Expected should_install={{ item.expected_should_install }}, actual should_install={{ should_install }}.
+      loop: "{{ decision_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+      vars:
+        component: idrac_lifecycle_controller
+        approved: "{{ component in idrac_update_approved_component_set }}"
+        excluded: "{{ component in idrac_update_disallowed_component_set }}"
+        firmware_action: >-
+          {% if component in idrac_update_disallowed_component_set %}excluded
+          {% elif component not in idrac_update_approved_component_set %}excluded
+          {% elif not item.component_present | bool %}not_applicable
+          {% elif item.current_version == 'UNKNOWN' %}unknown
+          {% elif item.current_version == item.expected_installed_version %}compliant
+          {% elif item.allow_downgrade | bool %}upgrade_required
+          {% else %}version_mismatch
+          {% endif %}
+        should_install: >-
+          {{
+            component in idrac_update_approved_component_set
+            and component not in idrac_update_disallowed_component_set
+            and item.component_present | bool
+            and item.current_version != 'UNKNOWN'
+            and item.current_version != item.expected_installed_version
+            and item.allow_downgrade | bool
+          }}
