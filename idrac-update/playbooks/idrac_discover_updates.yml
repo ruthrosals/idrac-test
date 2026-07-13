@@ -218,6 +218,9 @@
         firmware_component:
           name: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) }}"
           version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
+          id: "{{ item.Id | default(item.id | default(item.Name | default('UNKNOWN'))) }}"
+          software_id: "{{ item.SoftwareId | default(item.SoftwareID | default(item.software_id | default('UNKNOWN'))) }}"
+          redfish_name: "{{ item.Name | default(item.name | default('UNKNOWN')) }}"
       when: current_firmware_inventory is defined
 
     - name: Discovery | Initialize normalized firmware inventory
@@ -231,23 +234,52 @@
         current_firmware_component_keys: "{{ current_firmware_component_keys + [normalized_key] }}"
       loop: "{{ current_firmware_components | default([]) }}"
       vars:
-        component_key: "{{ item.name | lower | regex_replace('\\s+', '_') }}"
+        component_key: >-
+          {{
+            item.name
+            | lower
+            | trim
+            | regex_replace('[^a-z0-9]+', '_')
+            | regex_replace('_+', '_')
+            | regex_replace('^_+|_+$', '')
+          }}
         normalized_key: >-
           {{
-            'idrac' if component_key == 'integrated_dell_remote_access_controller'
+            'idrac_lifecycle_controller'
+            if component_key in [
+              'idrac',
+              'integrated_dell_remote_access_controller',
+              'lifecycle_controller',
+              'idrac_with_lifecycle_controller',
+              'idrac_lifecycle_controller'
+            ]
+            else 'uefi_diagnostics'
+            if (
+              'uefi' in component_key
+              and 'diagnostics' in component_key
+            )
+            else 'os_driver_pack'
+            if component_key in [
+              'os_driver_pack',
+              'dell_os_driver_pack',
+              'drivers_for_os_deployment'
+            ] or (
+              'driver' in component_key
+              and 'os' in component_key
+            )
             else component_key
           }}
         normalized_component:
-          name: >-
-            {{
-              'iDRAC' if normalized_key == 'idrac'
-              else item.name
-            }}
+          name: "{{ item.name }}"
           version: >-
             {{
-              idrac_manager_version if normalized_key == 'idrac'
+              idrac_manager_version if normalized_key == 'idrac_lifecycle_controller'
               else item.version
             }}
+          id: "{{ item.id | default('UNKNOWN') }}"
+          software_id: "{{ item.software_id | default('UNKNOWN') }}"
+          redfish_name: "{{ item.redfish_name | default(item.name) }}"
+          canonical_name: "{{ normalized_key }}"
       when: normalized_key not in current_firmware_component_keys
 
     - name: Discovery | Use normalized firmware component list
@@ -407,6 +439,10 @@
           }}
         discovery_component_report_row:
           component_name: "{{ component_name }}"
+          canonical_name: "{{ item.canonical_name | default(component_key) }}"
+          redfish_name: "{{ item.redfish_name | default(component_name) }}"
+          id: "{{ item.id | default('UNKNOWN') }}"
+          software_id: "{{ item.software_id | default('UNKNOWN') }}"
           current_version: "{{ item.version | default('UNKNOWN') }}"
           available_version: "{{ (component_available_updates | first).available_version | default('UNKNOWN') }}"
           reboot_required: "{{ (component_available_updates | first).reboot_required | default('UNKNOWN') }}"
@@ -541,6 +577,10 @@
           service_tag: "{{ item.0.service_tag }}"
           idrac_version: "{{ item.0.idrac_version }}"
           component_name: "{{ item.1.component_name }}"
+          canonical_name: "{{ item.1.canonical_name }}"
+          redfish_name: "{{ item.1.redfish_name }}"
+          id: "{{ item.1.id }}"
+          software_id: "{{ item.1.software_id }}"
           current_version: "{{ item.1.current_version }}"
           available_version: "{{ item.1.available_version }}"
           reboot_required: "{{ item.1.reboot_required }}"
@@ -568,7 +608,7 @@
     - name: Report | Export latest discovery summary CSV  # noqa: run-once[task]
       ansible.builtin.copy:
         content: |
-          inventory_hostname,idrac_ip,model,service_tag,current_idrac_firmware_version,component_name,current_version,available_version,reboot_required,source_catalog,discovery_status,discovery_error
+          inventory_hostname,idrac_ip,model,service_tag,current_idrac_firmware_version,component_name,canonical_name,redfish_name,id,software_id,current_version,available_version,reboot_required,source_catalog,discovery_status,discovery_error
           {% for row in hostvars.localhost.idrac_discovery_csv_rows | default([]) %}
           {{
             [
@@ -578,6 +618,10 @@
               row.service_tag,
               row.idrac_version,
               row.component_name,
+              row.canonical_name,
+              row.redfish_name,
+              row.id,
+              row.software_id,
               row.current_version,
               row.available_version,
               row.reboot_required,

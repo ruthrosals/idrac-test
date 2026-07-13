@@ -8,12 +8,24 @@ Operators prepare one CSV file with approved Dell firmware packages. The script 
 
 Nginx remains the active firmware source for iDRAC. Wasabi is the archive and recovery source. The script runs directly on the tools host, not inside the Nginx container.
 
+## Supported Update Scope
+
+Only low-risk, non-host-reboot firmware/application packages are automated:
+
+- `idrac_lifecycle_controller`
+- `uefi_diagnostics`
+- `os_driver_pack`
+
+The Dell `iDRAC with Lifecycle Controller` DUP is represented as one canonical component: `idrac_lifecycle_controller`. Do not configure separate `idrac` and `lifecycle_controller` update items for the same DUP.
+
+BIOS, PERC, NIC, disk firmware, CPLD, and other availability-impacting components remain out of scope.
+
 ## Optional Deployment Copy
 
 ```bash
-sudo cp scripts/add_firmware_packages_from_csv.sh /usr/local/sbin/add-firmware-packages
-sudo chmod 750 /usr/local/sbin/add-firmware-packages
-sudo chown root:cloudadm /usr/local/sbin/add-firmware-packages
+sudo cp scripts/add_firmware_packages_from_csv.sh /usr/local/sbin/add-firmware-packages/add_firmware_packages_from_csv.sh
+sudo chmod 750 /usr/local/sbin/add-firmware-packages/add_firmware_packages_from_csv.sh
+sudo chown root:cloudadm /usr/local/sbin/add-firmware-packages/add_firmware_packages_from_csv.sh
 ```
 
 Standard deployed execution command:
@@ -29,37 +41,30 @@ Use `examples/firmware_packages.csv` as the template. Operators should copy or e
 The CSV must use this header:
 
 ```csv
-component,version,source_file,target_version,name,transfer_protocol
+component,version,source_file,target_version,installed_version,name,transfer_protocol,allow_downgrade
 ```
 
 Working example:
 
 ```csv
-component,version,source_file,target_version,name,transfer_protocol
-idrac,5.10.30.00,/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_WPNPP_WN64_5.10.30.00_A00.EXE,5.10.30.00,iDRAC,HTTP
-diagnostics,4301.74,/home/cloudadm/packages/Diagnostics_Application_R30YT_WN64_4301A73_4301.74_01.EXE,4301.74,diagnostics,HTTP
-lifecycle_controller,5.10.30.00,/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_WPNPP_WN64_5.10.30.00_A00.EXE,5.10.30.00,Lifecycle Controller,HTTP
+component,version,source_file,target_version,installed_version,name,transfer_protocol,allow_downgrade
+idrac,7.00.00.184,/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE,7.00.00.184,7.00.00.184,idrac_lifecycle_controller,HTTP,false
+uefi_diagnostics,4301.74,/home/cloudadm/packages/Diagnostics_Application_R30YT_WN64_4301A73_4301.74_01.EXE,4301.74,4301A73,uefi_diagnostics,HTTP,false
+os_driver_pack,24.01.04,/home/cloudadm/packages/Drivers-for-OS-Deployment_Application_NROJY_WN64_24.01.04_A00.EXE,24.01.04,<confirmed_redfish_version>,os_driver_pack,HTTP,false
 ```
 
-Allowed components:
-
-- `idrac`
-- `diagnostics`
-- `lifecycle_controller`
-- `bios`
-- `nic`
-- `perc`
+Do not guess the Redfish installed version for OS Driver Pack. Confirm it through the discovery report before adding or applying that package.
 
 Field meaning:
 
 - `component`: folder under `/opt/firmware-repo/dell/`
 - `version`: version folder under the component
 - `source_file`: local Dell firmware package path
-- `target_version`: version used in Semaphore JSON
-- `name`: playbook item name
+- `target_version`: Dell package or release version
+- `installed_version`: expected Redfish-reported inventory version after install
+- `name`: canonical playbook item name
 - `transfer_protocol`: `HTTP` by default when empty
-
-For most routine updates, operators normally change only `source_file`, `version`, and `target_version`. Keep `component`, `name`, and `transfer_protocol` consistent with the playbook item being updated unless a new component is intentionally being added.
+- `allow_downgrade`: `true` only for an intentional downgrade; otherwise `false`
 
 Quoted commas inside CSV fields are not supported.
 
@@ -83,14 +88,19 @@ The helper script copies them into the served Nginx firmware repository:
 /opt/firmware-repo/dell/<component>/<version>/
 ```
 
-Example staging package paths:
+### Step 3 - Review discovery before adding package types
 
-```text
-/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_WPNPP_WN64_5.10.30.00_A00.EXE
-/home/cloudadm/packages/Diagnostics_Application_R30YT_WN64_4301A73_4301.74_01.EXE
-```
+Run the discovery playbook and review the report fields:
 
-### Step 3 - Edit the CSV template
+- Redfish `Name`
+- `Version`
+- `Id`
+- `SoftwareId`
+- `canonical_name`
+
+Use this report to confirm the correct `installed_version` before adding a new package type to `examples/firmware_packages.csv`.
+
+### Step 4 - Edit the CSV template
 
 Edit:
 
@@ -98,9 +108,9 @@ Edit:
 examples/firmware_packages.csv
 ```
 
-Confirm every row has the correct component, version, local source file, target version, playbook item name, and transfer protocol.
+Confirm every row has the correct component, version, local source file, target version, expected installed version, canonical name, transfer protocol, and downgrade setting.
 
-### Step 4 - Execute the helper script
+### Step 5 - Execute the helper script
 
 Run the script from the repository root during development or testing:
 
@@ -116,7 +126,7 @@ sudo /usr/local/sbin/add-firmware-packages/add_firmware_packages_from_csv.sh /ho
 
 The script processes every row in the CSV in one execution.
 
-### Step 5 - Review the automated output
+### Step 6 - Review the automated output
 
 The script automatically:
 
@@ -136,18 +146,25 @@ The generated JSON is also written to:
 /tmp/idrac_update_items_generated.json
 ```
 
+## Apply Behavior
+
+- A package absent from a server is reported as `not_applicable` and skipped.
+- A server already on the expected installed version is `compliant` and skipped.
+- A mismatched version is skipped as `version_mismatch` unless downgrade or force update is explicitly authorized.
+- BIOS, PERC, NIC, disk firmware, and CPLD are rejected before installation.
+
 ## Validation Notes
 
 Test a package through Nginx:
 
 ```bash
-curl -I http://10.107.0.167:8090/firmware/dell/idrac/5.10.30.00/iDRAC-with-Lifecycle-Controller_Firmware_WPNPP_WN64_5.10.30.00_A00.EXE
+curl -I http://10.107.0.167:8090/firmware/dell/idrac/7.00.00.184/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE
 ```
 
 Test a package in Wasabi:
 
 ```bash
-aws s3 ls s3://breqwatr-firmware-repo/firmware/dell/idrac/5.10.30.00/iDRAC-with-Lifecycle-Controller_Firmware_WPNPP_WN64_5.10.30.00_A00.EXE \
+aws s3 ls s3://breqwatr-firmware-repo/firmware/dell/idrac/7.00.00.184/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE \
   --profile wasabi \
   --endpoint-url https://s3.ca-central-1.wasabisys.com
 ```

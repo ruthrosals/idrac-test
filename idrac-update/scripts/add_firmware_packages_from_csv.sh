@@ -8,7 +8,7 @@ WASABI_ENDPOINT="https://s3.ca-central-1.wasabisys.com"
 AWS_PROFILE="wasabi"
 OUTPUT_JSON="/tmp/idrac_update_items_generated.json"
 
-ALLOWED_COMPONENTS=" idrac diagnostics lifecycle_controller bios nic perc "
+ALLOWED_COMPONENTS=" idrac idrac_lifecycle_controller uefi_diagnostics os_driver_pack "
 
 TMP_JSON_ITEMS=""
 declare -a uploaded_objects=()
@@ -41,7 +41,7 @@ require_command() {
 validate_component() {
   local component="$1"
   if [[ "$ALLOWED_COMPONENTS" != *" $component "* ]]; then
-    echo "ERROR: Unsupported component '$component'. Allowed: idrac diagnostics lifecycle_controller bios nic perc" >&2
+    echo "ERROR: Unsupported component '$component'. Allowed: idrac idrac_lifecycle_controller uefi_diagnostics os_driver_pack" >&2
     exit 1
   fi
 }
@@ -160,14 +160,14 @@ TMP_JSON_ITEMS="$(mktemp)"
 processed_count=0
 line_number=0
 
-while IFS=, read -r component version source_file target_version name transfer_protocol extra_field || [[ -n "${component:-}" ]]; do
+while IFS=, read -r component version source_file target_version installed_version name transfer_protocol allow_downgrade extra_field || [[ -n "${component:-}" ]]; do
   line_number=$((line_number + 1))
 
   component="${component#$'\xef\xbb\xbf'}"
 
   if [[ $line_number -eq 1 ]]; then
-    header="$(trim "$component"),$(trim "$version"),$(trim "$source_file"),$(trim "$target_version"),$(trim "$name"),$(trim "$transfer_protocol")"
-    if [[ "$header" == "component,version,source_file,target_version,name,transfer_protocol" ]]; then
+    header="$(trim "$component"),$(trim "$version"),$(trim "$source_file"),$(trim "$target_version"),$(trim "$installed_version"),$(trim "$name"),$(trim "$transfer_protocol"),$(trim "$allow_downgrade")"
+    if [[ "$header" == "component,version,source_file,target_version,installed_version,name,transfer_protocol,allow_downgrade" ]]; then
       continue
     fi
   fi
@@ -176,22 +176,30 @@ while IFS=, read -r component version source_file target_version name transfer_p
   version="$(trim "${version:-}")"
   source_file="$(trim "${source_file:-}")"
   target_version="$(trim "${target_version:-}")"
+  installed_version="$(trim "${installed_version:-}")"
   name="$(trim "${name:-}")"
   transfer_protocol="$(trim "${transfer_protocol:-HTTP}")"
+  allow_downgrade="$(trim "${allow_downgrade:-}")"
 
-  if [[ -z "$component" && -z "$version" && -z "$source_file" && -z "$target_version" && -z "$name" ]]; then
+  if [[ -z "$component" && -z "$version" && -z "$source_file" && -z "$target_version" && -z "$installed_version" && -z "$name" ]]; then
     continue
   fi
 
   if [[ -n "${extra_field:-}" ]]; then
-    echo "ERROR: Line $line_number has more than 6 CSV fields. Quoted commas are not supported." >&2
+    echo "ERROR: Line $line_number has more than 8 CSV fields. Quoted commas are not supported." >&2
     exit 1
   fi
 
   component="$(printf '%s' "$component" | tr '[:upper:]' '[:lower:]')"
   transfer_protocol="$(printf '%s' "$transfer_protocol" | tr '[:lower:]' '[:upper:]')"
+  allow_downgrade="$(printf '%s' "$allow_downgrade" | tr '[:upper:]' '[:lower:]')"
 
   validate_component "$component"
+
+  if [[ -n "$allow_downgrade" && "$allow_downgrade" != "true" && "$allow_downgrade" != "false" ]]; then
+    echo "ERROR: Line $line_number allow_downgrade must be true or false when supplied." >&2
+    exit 1
+  fi
 
   if [[ -z "$version" || -z "$source_file" || -z "$target_version" || -z "$name" ]]; then
     echo "ERROR: Line $line_number is missing required fields." >&2
@@ -238,8 +246,27 @@ while IFS=, read -r component version source_file target_version name transfer_p
     {
       "name": "$(json_escape "$name")",
       "target_version": "$(json_escape "$target_version")",
+JSON
+
+  if [[ -n "$installed_version" ]]; then
+    cat >> "$TMP_JSON_ITEMS" <<JSON
+      "installed_version": "$(json_escape "$installed_version")",
+JSON
+  fi
+
+  cat >> "$TMP_JSON_ITEMS" <<JSON
       "firmware_image_uri": "$(json_escape "$firmware_url")",
       "transfer_protocol": "$(json_escape "$transfer_protocol")"
+JSON
+
+  if [[ -n "$allow_downgrade" ]]; then
+    cat >> "$TMP_JSON_ITEMS" <<JSON
+      ,
+      "allow_downgrade": $allow_downgrade
+JSON
+  fi
+
+  cat >> "$TMP_JSON_ITEMS" <<JSON
     }
 JSON
 

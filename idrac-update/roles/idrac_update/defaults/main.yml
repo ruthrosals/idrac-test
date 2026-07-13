@@ -5,14 +5,18 @@
 idrac_update_mode: "check"
 
 idrac_update_approved_components:
-  - iDRAC
-  - lifecycle_controller
-  - diagnostics
+  - idrac_lifecycle_controller
+  - uefi_diagnostics
+  - os_driver_pack
 
 idrac_update_disallowed_components:
   - bios
   - perc
   - nic
+  - disk_firmware
+  - cpld
+
+idrac_update_allow_duplicate_components: false
 
 idrac_update_items: []
 
