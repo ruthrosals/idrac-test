@@ -542,24 +542,132 @@
     excluded: "{{ item.name_normalized in idrac_update_disallowed_component_set }}"
     allow_downgrade: "{{ item.allow_downgrade | default(false) | bool }}"
     force_update: "{{ item.force_update | default(false) | bool }}"
-    drift: "{{ current_version != expected_version }}"
+    install_when_absent: "{{ item.install_when_absent | default(false) | bool }}"
+    current_numeric_supported: >-
+      {{
+        item.name_normalized in ['idrac_lifecycle_controller', 'os_driver_pack']
+        and current_version is match('^[0-9]+(\.[0-9]+)+$')
+      }}
+    expected_numeric_supported: >-
+      {{
+        item.name_normalized in ['idrac_lifecycle_controller', 'os_driver_pack']
+        and expected_version is match('^[0-9]+(\.[0-9]+)+$')
+      }}
+    current_uefi_supported: >-
+      {{
+        item.name_normalized == 'uefi_diagnostics'
+        and current_version is match('^[0-9]+[A-Za-z][0-9]+$')
+      }}
+    expected_uefi_supported: >-
+      {{
+        item.name_normalized == 'uefi_diagnostics'
+        and expected_version is match('^[0-9]+[A-Za-z][0-9]+$')
+      }}
+    version_comparison_supported: >-
+      {{
+        (current_numeric_supported | string | lower == 'true' and expected_numeric_supported | string | lower == 'true')
+        or (current_uefi_supported | string | lower == 'true' and expected_uefi_supported | string | lower == 'true')
+      }}
+    current_numeric_parts: >-
+      {{
+        current_version.split('.') | map('int') | list
+        if current_numeric_supported | string | lower == 'true'
+        else []
+      }}
+    expected_numeric_parts: >-
+      {{
+        expected_version.split('.') | map('int') | list
+        if expected_numeric_supported | string | lower == 'true'
+        else []
+      }}
+    current_uefi_parts: >-
+      {{
+        [
+          current_version | regex_replace('^([0-9]+)[A-Za-z][0-9]+$', '\\1') | int,
+          current_version | regex_replace('^[0-9]+[A-Za-z]([0-9]+)$', '\\1') | int
+        ]
+        if current_uefi_supported | string | lower == 'true'
+        else []
+      }}
+    expected_uefi_parts: >-
+      {{
+        [
+          expected_version | regex_replace('^([0-9]+)[A-Za-z][0-9]+$', '\\1') | int,
+          expected_version | regex_replace('^[0-9]+[A-Za-z]([0-9]+)$', '\\1') | int
+        ]
+        if expected_uefi_supported | string | lower == 'true'
+        else []
+      }}
+    comparison_current_parts: >-
+      {{
+        current_uefi_parts
+        if item.name_normalized == 'uefi_diagnostics'
+        else current_numeric_parts
+      }}
+    comparison_expected_parts: >-
+      {{
+        expected_uefi_parts
+        if item.name_normalized == 'uefi_diagnostics'
+        else expected_numeric_parts
+      }}
+    version_relation: >-
+      {% if current_version == expected_version %}equal
+      {% elif current_version in ['UNKNOWN', 'NOT_APPLICABLE'] %}unknown
+      {% elif (version_comparison_supported | string | lower) != 'true' %}unknown
+      {% elif comparison_current_parts < comparison_expected_parts %}older
+      {% elif comparison_current_parts > comparison_expected_parts %}newer
+      {% else %}equal
+      {% endif %}
+    comparison_reason: >-
+      {% if current_version == expected_version %}versions match expected installed version
+      {% elif current_version == 'NOT_APPLICABLE' %}component is not present in Redfish inventory
+      {% elif current_version == 'UNKNOWN' %}current version is unknown
+      {% elif (version_comparison_supported | string | lower) != 'true' %}version format is not supported for comparison
+      {% elif item.name_normalized == 'uefi_diagnostics' %}compared UEFI diagnostics revision values
+      {% else %}compared dotted numeric version values
+      {% endif %}
+    drift: "{{ (version_relation | trim) != 'equal' }}"
     firmware_action: >-
       {% if item.name_normalized in idrac_update_disallowed_component_set %}excluded
       {% elif item.name_normalized not in idrac_update_approved_component_set %}excluded
-      {% elif item.name_normalized not in idrac_update_firmware_versions %}not_applicable
+      {% elif item.name_normalized not in idrac_update_firmware_versions and not install_when_absent | bool %}not_applicable
+      {% elif force_update | bool %}forced_update
+      {% elif item.name_normalized not in idrac_update_firmware_versions and install_when_absent | bool %}upgrade_required
       {% elif current_version == 'UNKNOWN' %}unknown
-      {% elif current_version == expected_version %}compliant
-      {% elif item.allow_downgrade | default(false) | bool or item.force_update | default(false) | bool %}upgrade_required
+      {% elif (version_relation | trim) == 'equal' %}compliant
+      {% elif (version_relation | trim) == 'older' %}upgrade_required
+      {% elif (version_relation | trim) == 'newer' and allow_downgrade | bool %}downgrade_required
+      {% elif (version_relation | trim) == 'newer' %}newer_than_target
       {% else %}version_mismatch
       {% endif %}
     should_install: >-
       {{
         item.name_normalized in idrac_update_approved_component_set
         and item.name_normalized not in idrac_update_disallowed_component_set
-        and item.name_normalized in idrac_update_firmware_versions
-        and current_version != 'UNKNOWN'
-        and current_version != expected_version
-        and (item.allow_downgrade | default(false) | bool or item.force_update | default(false) | bool)
+        and (
+          (
+            force_update | bool
+            and (
+              item.name_normalized in idrac_update_firmware_versions
+              or install_when_absent | bool
+            )
+          )
+          or (
+            item.name_normalized in idrac_update_firmware_versions
+            and current_version != 'UNKNOWN'
+            and (version_relation | trim) == 'older'
+          )
+          or (
+            item.name_normalized in idrac_update_firmware_versions
+            and current_version != 'UNKNOWN'
+            and (version_relation | trim) == 'newer'
+            and allow_downgrade | bool
+          )
+          or (
+            item.name_normalized not in idrac_update_firmware_versions
+            and install_when_absent | bool
+          )
+        )
       }}
     compliance_item:
       name: "{{ item.name }}"
@@ -575,7 +683,11 @@
       excluded: "{{ excluded }}"
       allow_downgrade: "{{ allow_downgrade }}"
       force_update: "{{ force_update }}"
+      install_when_absent: "{{ install_when_absent }}"
       drift: "{{ drift }}"
+      version_relation: "{{ version_relation | trim }}"
+      version_comparison_supported: "{{ version_comparison_supported }}"
+      comparison_reason: "{{ comparison_reason | trim }}"
       action: "{{ firmware_action | trim }}"
       should_install: "{{ should_install }}"
       skip_reason: "{{ firmware_action | trim }}"
@@ -604,6 +716,33 @@
   loop_control:
     label: "{{ item.normalized_name }}"
 
+
+- name: Pre-flight | Validate firmware decision outcomes
+  ansible.builtin.assert:
+    that:
+      - item.action != 'upgrade_required' or item.should_install | bool
+      - item.action != 'compliant' or not item.should_install | bool
+      - item.action != 'not_applicable' or not item.should_install | bool
+      - item.action != 'newer_than_target' or not item.allow_downgrade | bool
+      - item.action != 'newer_than_target' or not item.should_install | bool
+      - item.action != 'downgrade_required' or item.allow_downgrade | bool
+      - >-
+        idrac_update_mode != 'apply'
+        or not item.approved | bool
+        or item.excluded | bool
+        or item.applicability != 'applicable'
+        or (item.version_relation | trim) != 'unknown'
+        or item.force_update | bool
+    fail_msg: >-
+      Invalid firmware decision outcome for {{ item.name }} on {{ inventory_hostname }}.
+      action={{ item.action }} should_install={{ item.should_install }}
+      version_relation={{ item.version_relation }} allow_downgrade={{ item.allow_downgrade }}
+      comparison_reason={{ item.comparison_reason }}.
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.normalized_name }}"
+
+
 - name: Apply mode | Fail if requested component is outside non-disruptive scope
   ansible.builtin.fail:
     msg: >-
@@ -616,16 +755,6 @@
     - idrac_update_mode == 'apply'
     - item.name_normalized in idrac_update_disallowed_component_set
 
-- name: Apply mode | Debug apply mode evaluation
-  ansible.builtin.debug:
-    msg:
-      idrac_update_mode_input: "{{ idrac_update_mode_input | default('undefined') }}"
-      idrac_update_mode: "{{ idrac_update_mode }}"
-      ansible_check_mode: "{{ ansible_check_mode }}"
-      apply_condition: "{{ idrac_update_mode == 'apply' }}"
-      install_plan_length: "{{ idrac_update_install_plan | length }}"
-      install_plan_should_install_count: >-
-        {{ idrac_update_install_plan | selectattr('should_install', 'equalto', true) | list | length }}
 
 - name: Apply mode | Show firmware install plan
   ansible.builtin.debug:
@@ -1158,10 +1287,14 @@
       before_version: "{{ before_version }}"
       target_version: "{{ item.target_version }}"
       expected_installed_version: "{{ expected_version }}"
+      version_relation: "{{ item.version_relation }}"
+      version_comparison_supported: "{{ item.version_comparison_supported }}"
+      comparison_reason: "{{ item.comparison_reason }}"
       applicability: "{{ item.applicability }}"
       approved: "{{ item.approved }}"
       excluded: "{{ item.excluded }}"
       allow_downgrade: "{{ item.allow_downgrade }}"
+      should_install: "{{ item.should_install }}"
       action: "{{ final_action | trim }}"
       final_version: "{{ final_version }}"
       changed: "{{ changed }}"

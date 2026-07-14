@@ -39,41 +39,104 @@
       - input: BIOS
         expected: bios
     decision_cases:
-      - name: compliant
+      - name: idrac_upgrade
+        component: idrac_lifecycle_controller
+        current_version: 7.00.00.182
+        expected_installed_version: 7.00.00.184
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: older
+        expected_action: upgrade_required
+        expected_should_install: true
+      - name: idrac_compliant
+        component: idrac_lifecycle_controller
         current_version: 7.00.00.184
         expected_installed_version: 7.00.00.184
         component_present: true
         allow_downgrade: false
+        force_update: false
+        expected_relation: equal
         expected_action: compliant
         expected_should_install: false
-      - name: not_applicable
-        current_version: NOT_APPLICABLE
-        expected_installed_version: 4301A73
-        component_present: false
-        allow_downgrade: false
-        expected_action: not_applicable
-        expected_should_install: false
-      - name: version_mismatch_without_downgrade
+      - name: idrac_newer_without_downgrade
+        component: idrac_lifecycle_controller
         current_version: 7.00.00.184
-        expected_installed_version: 5.10.30.00
+        expected_installed_version: 7.00.00.182
         component_present: true
         allow_downgrade: false
-        expected_action: version_mismatch
+        force_update: false
+        expected_relation: newer
+        expected_action: newer_than_target
         expected_should_install: false
-      - name: version_mismatch_with_downgrade
+      - name: idrac_newer_with_downgrade
+        component: idrac_lifecycle_controller
         current_version: 7.00.00.184
-        expected_installed_version: 5.10.30.00
+        expected_installed_version: 7.00.00.182
         component_present: true
         allow_downgrade: true
+        force_update: false
+        expected_relation: newer
+        expected_action: downgrade_required
+        expected_should_install: true
+      - name: uefi_diagnostics_upgrade
+        component: uefi_diagnostics
+        current_version: 4301A70
+        expected_installed_version: 4301A73
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: older
         expected_action: upgrade_required
         expected_should_install: true
+      - name: uefi_diagnostics_compliant
+        component: uefi_diagnostics
+        current_version: 4301A73
+        expected_installed_version: 4301A73
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: equal
+        expected_action: compliant
+        expected_should_install: false
+      - name: os_driver_pack_upgrade_from_191205
+        component: os_driver_pack
+        current_version: 19.12.05
+        expected_installed_version: 24.01.04
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: older
+        expected_action: upgrade_required
+        expected_should_install: true
+      - name: os_driver_pack_upgrade_from_211001
+        component: os_driver_pack
+        current_version: 21.10.01
+        expected_installed_version: 24.01.04
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: older
+        expected_action: upgrade_required
+        expected_should_install: true
+      - name: unknown_unparseable_version
+        component: idrac_lifecycle_controller
+        current_version: custom-build
+        expected_installed_version: 7.00.00.184
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: unknown
+        expected_action: version_mismatch
+        expected_should_install: false
   tasks:
     - name: Validate canonical component normalization cases
       ansible.builtin.assert:
         that:
           - actual | trim == item.expected
         fail_msg: >-
-          Normalization failed for {{ item.input }}. Expected={{ item.expected }}, actual={{ actual }}.
+          Normalization failed for {{ item.input }}.
+          Expected={{ item.expected }}, actual={{ actual }}.
       loop: "{{ normalization_cases }}"
       loop_control:
         label: "{{ item.input }}"
@@ -150,26 +213,92 @@
     - name: Validate firmware decision cases
       ansible.builtin.assert:
         that:
+          - version_relation | trim == item.expected_relation
           - firmware_action | trim == item.expected_action
           - should_install | bool == item.expected_should_install
         fail_msg: >-
           Decision rule failed for {{ item.name }}.
+          Expected relation={{ item.expected_relation }}, actual relation={{ version_relation | trim }}.
           Expected action={{ item.expected_action }}, actual action={{ firmware_action | trim }}.
           Expected should_install={{ item.expected_should_install }}, actual should_install={{ should_install }}.
       loop: "{{ decision_cases }}"
       loop_control:
         label: "{{ item.name }}"
       vars:
-        component: idrac_lifecycle_controller
+        component: "{{ item.component }}"
+        current_version: "{{ item.current_version }}"
+        expected_version: "{{ item.expected_installed_version }}"
         approved: "{{ component in idrac_update_approved_component_set }}"
         excluded: "{{ component in idrac_update_disallowed_component_set }}"
+        current_numeric_supported: >-
+          {{
+            component in ['idrac_lifecycle_controller', 'os_driver_pack']
+            and current_version is match('^[0-9]+(\.[0-9]+)+$')
+          }}
+        expected_numeric_supported: >-
+          {{
+            component in ['idrac_lifecycle_controller', 'os_driver_pack']
+            and expected_version is match('^[0-9]+(\.[0-9]+)+$')
+          }}
+        current_uefi_supported: >-
+          {{
+            component == 'uefi_diagnostics'
+            and current_version is match('^[0-9]+[A-Za-z][0-9]+$')
+          }}
+        expected_uefi_supported: >-
+          {{
+            component == 'uefi_diagnostics'
+            and expected_version is match('^[0-9]+[A-Za-z][0-9]+$')
+          }}
+        version_comparison_supported: >-
+          {{
+            (current_numeric_supported | string | lower == 'true' and expected_numeric_supported | string | lower == 'true')
+            or (current_uefi_supported | string | lower == 'true' and expected_uefi_supported | string | lower == 'true')
+          }}
+        current_numeric_parts: >-
+          {{ current_version.split('.') | map('int') | list if current_numeric_supported | string | lower == 'true' else [] }}
+        expected_numeric_parts: >-
+          {{ expected_version.split('.') | map('int') | list if expected_numeric_supported | string | lower == 'true' else [] }}
+        current_uefi_parts: >-
+          {{
+            [
+              current_version | regex_replace('^([0-9]+)[A-Za-z][0-9]+$', '\1') | int,
+              current_version | regex_replace('^[0-9]+[A-Za-z]([0-9]+)$', '\1') | int
+            ]
+            if current_uefi_supported | string | lower == 'true'
+            else []
+          }}
+        expected_uefi_parts: >-
+          {{
+            [
+              expected_version | regex_replace('^([0-9]+)[A-Za-z][0-9]+$', '\1') | int,
+              expected_version | regex_replace('^[0-9]+[A-Za-z]([0-9]+)$', '\1') | int
+            ]
+            if expected_uefi_supported | string | lower == 'true'
+            else []
+          }}
+        comparison_current_parts: >-
+          {{ current_uefi_parts if component == 'uefi_diagnostics' else current_numeric_parts }}
+        comparison_expected_parts: >-
+          {{ expected_uefi_parts if component == 'uefi_diagnostics' else expected_numeric_parts }}
+        version_relation: >-
+          {% if current_version == expected_version %}equal
+          {% elif not item.component_present | bool or current_version == 'UNKNOWN' %}unknown
+          {% elif (version_comparison_supported | string | lower) != 'true' %}unknown
+          {% elif comparison_current_parts < comparison_expected_parts %}older
+          {% elif comparison_current_parts > comparison_expected_parts %}newer
+          {% else %}equal
+          {% endif %}
         firmware_action: >-
           {% if component in idrac_update_disallowed_component_set %}excluded
           {% elif component not in idrac_update_approved_component_set %}excluded
           {% elif not item.component_present | bool %}not_applicable
-          {% elif item.current_version == 'UNKNOWN' %}unknown
-          {% elif item.current_version == item.expected_installed_version %}compliant
-          {% elif item.allow_downgrade | bool %}upgrade_required
+          {% elif item.force_update | bool %}forced_update
+          {% elif current_version == 'UNKNOWN' %}unknown
+          {% elif (version_relation | trim) == 'equal' %}compliant
+          {% elif (version_relation | trim) == 'older' %}upgrade_required
+          {% elif (version_relation | trim) == 'newer' and item.allow_downgrade | bool %}downgrade_required
+          {% elif (version_relation | trim) == 'newer' %}newer_than_target
           {% else %}version_mismatch
           {% endif %}
         should_install: >-
@@ -177,7 +306,19 @@
             component in idrac_update_approved_component_set
             and component not in idrac_update_disallowed_component_set
             and item.component_present | bool
-            and item.current_version != 'UNKNOWN'
-            and item.current_version != item.expected_installed_version
-            and item.allow_downgrade | bool
+            and (
+              (
+                item.force_update | bool
+                and item.component_present | bool
+              )
+              or (
+                current_version != 'UNKNOWN'
+                and (version_relation | trim) == 'older'
+              )
+              or (
+                current_version != 'UNKNOWN'
+                and (version_relation | trim) == 'newer'
+                and item.allow_downgrade | bool
+              )
+            )
           }}
