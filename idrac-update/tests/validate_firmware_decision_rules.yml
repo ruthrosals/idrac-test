@@ -94,9 +94,21 @@
         expected_relation: newer
         expected_action: downgrade_required
         expected_should_install: true
-      - name: uefi_diagnostics_upgrade
+      - name: uefi_diagnostics_upgrade_a70_to_a73
         component: uefi_diagnostics
         current_version: 4301A70
+        target_version: 4301.74
+        expected_installed_version: 4301A73
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: older
+        expected_action: upgrade_required
+        expected_should_install: true
+      - name: uefi_diagnostics_upgrade_a71_to_a73
+        component: uefi_diagnostics
+        current_version: 4301A71
+        target_version: 4301.74
         expected_installed_version: 4301A73
         component_present: true
         allow_downgrade: false
@@ -107,12 +119,24 @@
       - name: uefi_diagnostics_compliant
         component: uefi_diagnostics
         current_version: 4301A73
+        target_version: 4301.74
         expected_installed_version: 4301A73
         component_present: true
         allow_downgrade: false
         force_update: false
         expected_relation: equal
         expected_action: compliant
+        expected_should_install: false
+      - name: uefi_diagnostics_newer_a74_to_a73
+        component: uefi_diagnostics
+        current_version: 4301A74
+        target_version: 4301.74
+        expected_installed_version: 4301A73
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: newer
+        expected_action: newer_than_target
         expected_should_install: false
       - name: os_driver_pack_upgrade_from_191205
         component: os_driver_pack
@@ -277,8 +301,8 @@
         current_uefi_parts: >-
           {{
             [
-              current_version | regex_replace('^([0-9]+)[A-Za-z][0-9]+$', '\1') | int,
-              current_version | regex_replace('^[0-9]+[A-Za-z]([0-9]+)$', '\1') | int
+              current_version | regex_replace('[A-Za-z].*$', '') | int,
+              current_version | regex_replace('^[0-9]+[A-Za-z]', '') | int
             ]
             if current_uefi_supported | string | lower == 'true'
             else []
@@ -286,8 +310,8 @@
         expected_uefi_parts: >-
           {{
             [
-              expected_version | regex_replace('^([0-9]+)[A-Za-z][0-9]+$', '\1') | int,
-              expected_version | regex_replace('^[0-9]+[A-Za-z]([0-9]+)$', '\1') | int
+              expected_version | regex_replace('[A-Za-z].*$', '') | int,
+              expected_version | regex_replace('^[0-9]+[A-Za-z]', '') | int
             ]
             if expected_uefi_supported | string | lower == 'true'
             else []

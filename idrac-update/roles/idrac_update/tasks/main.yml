@@ -583,8 +583,8 @@
     current_uefi_parts: >-
       {{
         [
-          current_version | regex_replace('^([0-9]+)[A-Za-z][0-9]+$', '\\1') | int,
-          current_version | regex_replace('^[0-9]+[A-Za-z]([0-9]+)$', '\\1') | int
+          current_version | regex_replace('[A-Za-z].*$', '') | int,
+          current_version | regex_replace('^[0-9]+[A-Za-z]', '') | int
         ]
         if current_uefi_supported | string | lower == 'true'
         else []
@@ -592,8 +592,8 @@
     expected_uefi_parts: >-
       {{
         [
-          expected_version | regex_replace('^([0-9]+)[A-Za-z][0-9]+$', '\\1') | int,
-          expected_version | regex_replace('^[0-9]+[A-Za-z]([0-9]+)$', '\\1') | int
+          expected_version | regex_replace('[A-Za-z].*$', '') | int,
+          expected_version | regex_replace('^[0-9]+[A-Za-z]', '') | int
         ]
         if expected_uefi_supported | string | lower == 'true'
         else []
@@ -687,6 +687,10 @@
       drift: "{{ drift }}"
       version_relation: "{{ version_relation | trim }}"
       version_comparison_supported: "{{ version_comparison_supported }}"
+      comparison_current_parts: "{{ comparison_current_parts }}"
+      comparison_expected_parts: "{{ comparison_expected_parts }}"
+      parsed_current_revision: "{{ current_uefi_parts[1] if item.name_normalized == 'uefi_diagnostics' and current_uefi_parts | length > 1 else '' }}"
+      parsed_expected_revision: "{{ expected_uefi_parts[1] if item.name_normalized == 'uefi_diagnostics' and expected_uefi_parts | length > 1 else '' }}"
       comparison_reason: "{{ comparison_reason | trim }}"
       action: "{{ firmware_action | trim }}"
       should_install: "{{ should_install }}"
