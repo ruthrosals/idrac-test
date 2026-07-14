@@ -38,6 +38,21 @@
         expected: os_driver_pack
       - input: BIOS
         expected: bios
+    idrac_update_component_order:
+      - uefi_diagnostics
+      - os_driver_pack
+      - idrac_lifecycle_controller
+    sequencing_input:
+      - normalized_name: idrac_lifecycle_controller
+        should_install: true
+      - normalized_name: os_driver_pack
+        should_install: true
+      - normalized_name: uefi_diagnostics
+        should_install: true
+    expected_execution_order:
+      - uefi_diagnostics
+      - os_driver_pack
+      - idrac_lifecycle_controller
     decision_cases:
       - name: idrac_upgrade
         component: idrac_lifecycle_controller
@@ -322,3 +337,21 @@
               )
             )
           }}
+
+
+    - name: Validate firmware execution ordering
+      ansible.builtin.assert:
+        that:
+          - actual_execution_order == expected_execution_order
+          - actual_execution_order[-1] == 'idrac_lifecycle_controller'
+        fail_msg: >-
+          Firmware execution order failed.
+          Expected={{ expected_execution_order }}, actual={{ actual_execution_order }}.
+      vars:
+        ordered_items: >-
+          {{
+            (sequencing_input | selectattr('normalized_name', 'equalto', 'uefi_diagnostics') | list)
+            + (sequencing_input | selectattr('normalized_name', 'equalto', 'os_driver_pack') | list)
+            + (sequencing_input | selectattr('normalized_name', 'equalto', 'idrac_lifecycle_controller') | list)
+          }}
+        actual_execution_order: "{{ ordered_items | map(attribute='normalized_name') | list }}"

@@ -101,6 +101,16 @@ idrac_update_mode: apply
 idrac_update_serial: 25%
 ```
 
+### Firmware Apply Sequencing
+
+Apply mode processes firmware packages strictly one at a time. The role orders installable components as:
+
+1. `uefi_diagnostics`
+2. `os_driver_pack`
+3. `idrac_lifecycle_controller`
+
+This avoids submitting another package while iDRAC/Redfish services are recovering. The `idrac_lifecycle_controller` update is always last because it can restart management services. Before moving to the next package, the role waits for TCP 443, authenticated `/redfish/v1/Managers/iDRAC.Embedded.1` JSON, authenticated `/redfish/v1/UpdateService` JSON, refreshed inventory, and expected-version verification.
+
 ### Troubleshooting Hidden Firmware Module Errors
 
 Firmware install output is hidden by default because the Dell module receives

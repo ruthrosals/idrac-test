@@ -1,0 +1,116 @@
+---
+- name: Apply item | Initialize firmware item state
+  ansible.builtin.set_fact:
+    idrac_update_firmware_item_attempts: 0
+    idrac_update_firmware_item_submitted: false
+    idrac_update_firmware_item_module_changed: false
+    idrac_update_firmware_item_job_id: ""
+    idrac_update_firmware_item_error: ""
+    idrac_update_firmware_item_verified: false
+    idrac_update_firmware_item_final_version: "{{ firmware_item.current_version }}"
+    idrac_update_firmware_item_redfish_recovered: false
+
+- name: Apply item | Report firmware install action
+  ansible.builtin.debug:
+    msg: >-
+      Installing {{ firmware_item.name }} on {{ inventory_hostname }}
+      from {{ firmware_item.current_version }} to {{ firmware_item.expected_installed_version }}
+
+- name: Apply item | Submit firmware with readiness checks between attempts
+  ansible.builtin.include_tasks: apply_firmware_submit_attempt.yml
+  loop: "{{ range(0, idrac_update_firmware_submit_retries | int) | list }}"
+  loop_control:
+    loop_var: idrac_update_firmware_submit_attempt_index
+    label: "attempt {{ idrac_update_firmware_submit_attempt_index | int + 1 }}"
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+
+- name: Apply item | Fail if firmware submission did not succeed
+  ansible.builtin.fail:
+    msg: >-
+      Firmware package failed before submission completed on {{ inventory_hostname }}.
+      component={{ firmware_item.name }} attempts={{ idrac_update_firmware_item_attempts }}
+      error={{ idrac_update_firmware_item_error }}.
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+
+- name: Apply item | Wait for iDRAC outage after management controller update
+  ansible.builtin.wait_for:
+    host: "{{ idrac_ip }}"
+    port: "{{ idrac_update_port }}"
+    timeout: 120
+    state: stopped
+  failed_when: false
+  when:
+    - firmware_item.normalized_name == 'idrac_lifecycle_controller'
+    - idrac_update_firmware_item_submitted | bool
+
+- name: Apply item | Wait for full Redfish recovery
+  ansible.builtin.include_tasks: apply_wait_redfish_ready.yml
+  when: idrac_update_firmware_item_submitted | bool
+
+- name: Apply item | Mark Redfish recovered
+  ansible.builtin.set_fact:
+    idrac_update_firmware_item_redfish_recovered: true
+  when: idrac_update_firmware_item_submitted | bool
+
+- name: Apply item | Stabilize after iDRAC/Lifecycle Controller recovery
+  ansible.builtin.pause:
+    seconds: "{{ idrac_update_post_idrac_stabilization_delay }}"
+  when:
+    - firmware_item.normalized_name == 'idrac_lifecycle_controller'
+    - idrac_update_firmware_item_submitted | bool
+
+- name: Apply item | Refresh inventory after firmware package
+  ansible.builtin.include_tasks: apply_refresh_firmware_inventory.yml
+
+- name: Apply item | Capture final component version
+  ansible.builtin.set_fact:
+    idrac_update_firmware_item_final_version: >-
+      {{ idrac_update_firmware_versions_after[firmware_item.normalized_name] | default('UNKNOWN') }}
+    idrac_update_firmware_item_verified: >-
+      {{
+        idrac_update_firmware_versions_after[firmware_item.normalized_name] | default('UNKNOWN')
+        == firmware_item.expected_installed_version
+      }}
+
+- name: Apply item | Append structured install result
+  ansible.builtin.set_fact:
+    idrac_update_install_results: "{{ idrac_update_install_results + [idrac_update_install_result_item] }}"
+  vars:
+    idrac_update_install_result_item:
+      host: "{{ inventory_hostname }}"
+      component: "{{ firmware_item.normalized_name }}"
+      name: "{{ firmware_item.name }}"
+      normalized_name: "{{ firmware_item.normalized_name }}"
+      submitted: "{{ idrac_update_firmware_item_submitted }}"
+      job_id: "{{ idrac_update_firmware_item_job_id }}"
+      module_changed: "{{ idrac_update_firmware_item_module_changed }}"
+      before_version: "{{ firmware_item.current_version }}"
+      expected_installed_version: "{{ firmware_item.expected_installed_version }}"
+      expected_version: "{{ firmware_item.expected_installed_version }}"
+      final_version: "{{ idrac_update_firmware_item_final_version }}"
+      redfish_recovered: "{{ idrac_update_firmware_item_redfish_recovered }}"
+      verification_passed: "{{ idrac_update_firmware_item_verified }}"
+      attempts: "{{ idrac_update_firmware_item_attempts }}"
+      status: "{{ 'installed' if idrac_update_firmware_item_verified | bool else 'verification_failed' }}"
+      error: "{{ '' if idrac_update_firmware_item_verified | bool else idrac_update_firmware_item_error }}"
+      action: installed
+      applicability: "{{ firmware_item.applicability }}"
+      allow_downgrade: "{{ firmware_item.allow_downgrade }}"
+      redfish_task_id: "{{ idrac_update_firmware_item_job_id }}"
+      changed: "{{ idrac_update_firmware_item_module_changed }}"
+      skipped: false
+
+- name: Apply item | Verify expected installed version before next package
+  ansible.builtin.assert:
+    that:
+      - idrac_update_firmware_item_verified | bool
+    fail_msg: >-
+      Firmware verification failed on {{ inventory_hostname }} for {{ firmware_item.name }}.
+      before={{ firmware_item.current_version }}
+      final={{ idrac_update_firmware_item_final_version }}
+      expected_installed={{ firmware_item.expected_installed_version }}.
+      Not continuing to the next firmware package on this host.

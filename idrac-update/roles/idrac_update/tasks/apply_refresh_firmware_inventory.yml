@@ -1,0 +1,168 @@
+---
+- name: Apply item | Get iDRAC manager information
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_manager_after
+  no_log: true
+
+- name: Apply item | Capture firmware inventory
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/UpdateService/FirmwareInventory"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: [200, 404]
+    timeout: 30
+  register: idrac_update_firmware_inventory_after
+  failed_when: false
+  no_log: true
+
+- name: Apply item | Capture fallback manager firmware inventory
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1/FirmwareInventory"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_firmware_inventory_after_fallback
+  failed_when: false
+  no_log: true
+  when: idrac_update_firmware_inventory_after.status is not defined or idrac_update_firmware_inventory_after.status != 200
+
+- name: Apply item | Use fallback manager firmware inventory
+  ansible.builtin.set_fact:
+    idrac_update_firmware_inventory_after: "{{ idrac_update_firmware_inventory_after_fallback }}"
+  when:
+    - idrac_update_firmware_inventory_after.status is not defined or idrac_update_firmware_inventory_after.status != 200
+    - idrac_update_firmware_inventory_after_fallback is defined
+    - idrac_update_firmware_inventory_after_fallback.status is defined
+    - idrac_update_firmware_inventory_after_fallback.status == 200
+
+- name: Apply item | Fetch firmware inventory members
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}{{ item['@odata.id'] }}"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  loop: "{{ idrac_update_firmware_inventory_after.json.Members | default([]) }}"
+  loop_control:
+    label: "{{ item['@odata.id'] }}"
+  register: idrac_update_firmware_inventory_after_details
+  failed_when: false
+  no_log: true
+  when: idrac_update_firmware_inventory_after.json.Members is defined
+
+- name: Apply item | Build refreshed firmware inventory list
+  ansible.builtin.set_fact:
+    idrac_update_firmware_inventory_after: >-
+      {{
+        idrac_update_firmware_inventory_after_details.results | default([])
+        | selectattr('json', 'defined')
+        | map(attribute='json')
+        | list
+      }}
+  when: idrac_update_firmware_inventory_after_details is defined
+
+- name: Apply item | Fallback refreshed firmware inventory
+  ansible.builtin.set_fact:
+    idrac_update_firmware_inventory_after:
+      - name: "iDRAC"
+        id: "iDRAC"
+        version: "{{ idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN') }}"
+        source: "Managers/iDRAC.Embedded.1"
+  when: idrac_update_firmware_inventory_after is not defined or idrac_update_firmware_inventory_after | length == 0
+
+- name: Apply item | Reset refreshed firmware version lookup
+  ansible.builtin.set_fact:
+    idrac_update_firmware_versions_after: {}
+
+- name: Apply item | Build refreshed firmware version lookup
+  ansible.builtin.set_fact:
+    idrac_update_firmware_versions_after: >-
+      {{
+        idrac_update_firmware_versions_after | default({})
+        | combine(
+            (idrac_update_firmware_key in (idrac_update_firmware_versions_after | default({})))
+            | ternary({}, {idrac_update_firmware_key: idrac_update_firmware_version})
+          )
+      }}
+  loop: "{{ idrac_update_firmware_inventory_after }}"
+  vars:
+    idrac_update_firmware_key: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) | lower | regex_replace('\\s+', '_') }}"
+    idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
+
+- name: Apply item | Build refreshed canonical firmware version aliases
+  ansible.builtin.set_fact:
+    idrac_update_firmware_versions_after: >-
+      {{
+        idrac_update_firmware_versions_after
+        | combine(
+            (idrac_update_firmware_alias | length > 0 and idrac_update_firmware_alias not in idrac_update_firmware_versions_after)
+            | ternary({(idrac_update_firmware_alias): idrac_update_firmware_version}, {})
+          )
+      }}
+  loop: "{{ idrac_update_firmware_inventory_after }}"
+  vars:
+    idrac_update_component_name: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) }}"
+    idrac_update_component_name_normalized: >-
+      {{
+        idrac_update_component_name
+        | lower
+        | trim
+        | regex_replace('[^a-z0-9]+', '_')
+        | regex_replace('_+', '_')
+        | regex_replace('^_+|_+$', '')
+      }}
+    idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
+    idrac_update_firmware_alias: >-
+      {{
+        'idrac_lifecycle_controller'
+        if idrac_update_component_name_normalized in [
+          'idrac',
+          'integrated_dell_remote_access_controller',
+          'lifecycle_controller',
+          'idrac_with_lifecycle_controller',
+          'idrac_lifecycle_controller'
+        ]
+        else 'uefi_diagnostics'
+        if (
+          'uefi' in idrac_update_component_name_normalized
+          and 'diagnostics' in idrac_update_component_name_normalized
+        )
+        else 'os_driver_pack'
+        if idrac_update_component_name_normalized in [
+          'os_driver_pack',
+          'dell_os_driver_pack',
+          'drivers_for_os_deployment'
+        ] or (
+          'driver' in idrac_update_component_name_normalized
+          and 'os' in idrac_update_component_name_normalized
+        )
+        else ''
+      }}
+
+- name: Apply item | Set refreshed iDRAC/Lifecycle Controller alias from manager
+  ansible.builtin.set_fact:
+    idrac_update_firmware_versions_after: >-
+      {{
+        idrac_update_firmware_versions_after
+        | combine({
+            'idrac_lifecycle_controller': idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN')
+          })
+      }}

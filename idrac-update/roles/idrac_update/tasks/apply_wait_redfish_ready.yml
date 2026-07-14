@@ -1,0 +1,44 @@
+---
+- name: Apply item | Wait for TCP 443 to return
+  ansible.builtin.wait_for:
+    host: "{{ idrac_ip }}"
+    port: "{{ idrac_update_port }}"
+    timeout: "{{ idrac_update_redfish_recovery_retries * idrac_update_redfish_recovery_delay }}"
+    state: started
+
+- name: Apply item | Wait for authenticated iDRAC Manager JSON
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_manager_ready
+  retries: "{{ idrac_update_redfish_recovery_retries }}"
+  delay: "{{ idrac_update_redfish_recovery_delay }}"
+  until:
+    - idrac_update_manager_ready.status == 200
+    - idrac_update_manager_ready.json is defined
+    - idrac_update_manager_ready.json.FirmwareVersion is defined
+  no_log: "{{ idrac_update_no_log }}"
+
+- name: Apply item | Wait for authenticated UpdateService JSON
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/UpdateService"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_service_ready
+  retries: "{{ idrac_update_redfish_recovery_retries }}"
+  delay: "{{ idrac_update_redfish_recovery_delay }}"
+  until:
+    - idrac_update_service_ready.status == 200
+    - idrac_update_service_ready.json is defined
+  no_log: "{{ idrac_update_no_log }}"

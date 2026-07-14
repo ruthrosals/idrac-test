@@ -47,6 +47,16 @@ scripts/add_firmware_packages_from_csv.sh examples/firmware_packages.csv
 
 The helper copies approved Dell firmware packages into the Nginx firmware repository, validates the HTTP URLs, syncs the repository to Wasabi, verifies uploaded objects, and prints the `idrac_update_items` JSON block for Semaphore.
 
+## Apply Sequencing
+
+Redfish firmware updates are submitted one package at a time. The role builds an effective execution order independent of the Semaphore variable order:
+
+1. `uefi_diagnostics`
+2. `os_driver_pack`
+3. `idrac_lifecycle_controller`
+
+The `idrac_lifecycle_controller` package is intentionally last because it can restart iDRAC management services. After that package, the role waits for HTTPS, authenticated Manager JSON, and authenticated UpdateService JSON before continuing or reporting completion.
+
 ## Applicability And Version Behavior
 
 The same package set may be sent to mixed server inventories.

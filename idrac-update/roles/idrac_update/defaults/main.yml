@@ -30,6 +30,16 @@ idrac_update_image_uri_timeout: 30
 idrac_update_image_uri_status_codes:
   - 200
 
+idrac_update_component_order:
+  - uefi_diagnostics
+  - os_driver_pack
+  - idrac_lifecycle_controller
+idrac_update_post_idrac_stabilization_delay: 30
+idrac_update_firmware_submit_retries: 3
+idrac_update_firmware_submit_retry_delay: 20
+idrac_update_redfish_recovery_retries: 60
+idrac_update_redfish_recovery_delay: 10
+
 idrac_update_user: "{{ lookup('env', 'IDRAC_USERNAME') }}"
 idrac_update_password: "{{ lookup('env', 'IDRAC_PASSWORD') }}"
 

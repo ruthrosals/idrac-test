@@ -890,61 +890,56 @@
     - not item.skipped | default(false)
     - item.status | default(0) not in idrac_update_image_uri_status_codes
 
-- name: Apply mode | Report firmware install action
-  ansible.builtin.debug:
-    msg: >-
-      Installing {{ item.name }} on {{ inventory_hostname }}
-      from {{ item.current_version }} to {{ item.expected_installed_version }}
-  loop: "{{ idrac_update_install_plan }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when:
-    - idrac_update_mode == 'apply'
-    - item.should_install | bool
-
-- name: Apply mode | Stage and install approved firmware components
-  dellemc.openmanage.redfish_firmware:
-    baseuri: "{{ idrac_ip }}:{{ idrac_update_port }}"
-    username: "{{ idrac_update_user }}"
-    password: "{{ idrac_update_password }}"
-    image_uri: "{{ item.firmware_image_uri }}"
-    transfer_protocol: "{{ item.transfer_protocol }}"
-    validate_certs: "{{ idrac_update_validate_certs }}"
-    job_wait: true
-    job_wait_timeout: "{{ idrac_job_wait_timeout | default(1800) }}"
-    timeout: 60
-  loop: "{{ idrac_update_install_plan }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: idrac_update_results
-  no_log: "{{ idrac_update_no_log }}"
-  changed_when: item.should_install | bool
-  when:
-    - idrac_update_mode == 'apply'
-    - item.should_install | bool
-
-- name: Apply mode | Build install result entries for attempted firmware components
+- name: Apply mode | Reset ordered firmware execution plan
   ansible.builtin.set_fact:
-    idrac_update_install_results: "{{ idrac_update_install_results + [idrac_update_install_result_item] }}"
-  loop: "{{ idrac_update_results.results | default([]) }}"
+    idrac_update_ordered_install_plan: []
+  when: idrac_update_mode == 'apply'
+
+- name: Apply mode | Add installable firmware items in preferred order
+  ansible.builtin.set_fact:
+    idrac_update_ordered_install_plan: >-
+      {{
+        idrac_update_ordered_install_plan
+        + (
+            idrac_update_install_plan
+            | selectattr('should_install', 'equalto', true)
+            | selectattr('normalized_name', 'equalto', item)
+            | list
+          )
+      }}
+  loop: "{{ idrac_update_component_order }}"
   loop_control:
-    label: "{{ item.item.name | default('unknown') }}"
-  vars:
-    idrac_update_install_result_item:
+    label: "{{ item }}"
+  when: idrac_update_mode == 'apply'
+
+- name: Apply mode | Add installable firmware items not in preferred order
+  ansible.builtin.set_fact:
+    idrac_update_ordered_install_plan: >-
+      {{
+        idrac_update_ordered_install_plan
+        + (
+            idrac_update_install_plan
+            | selectattr('should_install', 'equalto', true)
+            | rejectattr('normalized_name', 'in', idrac_update_component_order)
+            | list
+          )
+      }}
+  when: idrac_update_mode == 'apply'
+
+- name: Apply mode | Show effective firmware execution order
+  ansible.builtin.debug:
+    msg:
       host: "{{ inventory_hostname }}"
-      name: "{{ item.item.name }}"
-      normalized_name: "{{ item.item.normalized_name }}"
-      before_version: "{{ item.item.current_version }}"
-      expected_version: "{{ item.item.expected_installed_version }}"
-      action: installed
-      applicability: "{{ item.item.applicability }}"
-      allow_downgrade: "{{ item.item.allow_downgrade }}"
-      redfish_task_id: "{{ item.task.id | default(item.task.Id | default(item.task.uri | default(''))) }}"
-      changed: "{{ item.changed | default(false) }}"
-      skipped: false
-  when:
-    - idrac_update_mode == 'apply'
-    - not item.skipped | default(false)
+      execution_order: "{{ idrac_update_ordered_install_plan | map(attribute='normalized_name') | list }}"
+  when: idrac_update_mode == 'apply'
+
+- name: Apply mode | Apply firmware items sequentially
+  ansible.builtin.include_tasks: apply_firmware_item.yml
+  loop: "{{ idrac_update_ordered_install_plan | default([]) }}"
+  loop_control:
+    loop_var: firmware_item
+    label: "{{ firmware_item.name }}"
+  when: idrac_update_mode == 'apply'
 
 - name: Apply mode | Build skipped install result entries
   ansible.builtin.set_fact:
@@ -955,10 +950,21 @@
   vars:
     idrac_update_install_result_item:
       host: "{{ inventory_hostname }}"
+      component: "{{ item.normalized_name }}"
       name: "{{ item.name }}"
       normalized_name: "{{ item.normalized_name }}"
+      submitted: false
+      job_id: ""
+      module_changed: false
       before_version: "{{ item.current_version }}"
+      expected_installed_version: "{{ item.expected_installed_version }}"
       expected_version: "{{ item.expected_installed_version }}"
+      final_version: "{{ item.current_version }}"
+      redfish_recovered: false
+      verification_passed: false
+      attempts: 0
+      status: skipped
+      error: "{{ item.skip_reason }}"
       action: "{{ item.action }}"
       applicability: "{{ item.applicability }}"
       allow_downgrade: "{{ item.allow_downgrade }}"
@@ -982,47 +988,6 @@
   when:
     - idrac_update_mode == 'apply'
     - not item.should_install | bool
-
-- name: Apply mode | Wait for iDRAC Redfish to return
-  ansible.builtin.uri:
-    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1"
-    method: GET
-    url_username: "{{ idrac_update_user }}"
-    url_password: "{{ idrac_update_password }}"
-    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
-    validate_certs: "{{ idrac_update_validate_certs }}"
-    status_code: 200
-    timeout: 30
-  register: idrac_update_after_reboot
-  retries: 40
-  delay: 30
-  until: idrac_update_after_reboot.status == 200
-  no_log: true
-  when:
-    - idrac_update_mode == 'apply'
-    - idrac_update_results is defined
-    - idrac_update_results.results | selectattr('changed', 'equalto', true) | list | length > 0
-
-- name: Apply mode | Wait for iDRAC Manager firmware version to reach expected version
-  ansible.builtin.uri:
-    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1"
-    method: GET
-    url_username: "{{ idrac_update_user }}"
-    url_password: "{{ idrac_update_password }}"
-    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
-    validate_certs: "{{ idrac_update_validate_certs }}"
-    status_code: 200
-    timeout: 30
-  register: idrac_update_manager_after
-  retries: 30
-  delay: 20
-  until:
-    - idrac_update_manager_after.json is defined
-    - idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN') == idrac_update_idrac_expected_version
-  no_log: "{{ idrac_update_no_log }}"
-  when:
-    - idrac_update_mode == 'apply'
-    - idrac_update_idrac_update_expected | bool
 
 - name: Post-check | Get final iDRAC manager information
   ansible.builtin.uri:

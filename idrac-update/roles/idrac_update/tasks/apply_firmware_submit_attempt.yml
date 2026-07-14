@@ -1,0 +1,206 @@
+---
+- name: Apply item | Run Redfish readiness checks before submit attempt
+  ansible.builtin.include_tasks: apply_wait_redfish_ready.yml
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+
+- name: Apply item | Refresh inventory before submit attempt
+  ansible.builtin.include_tasks: apply_refresh_firmware_inventory.yml
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+
+- name: Apply item | Check whether expected version is already installed
+  ansible.builtin.set_fact:
+    idrac_update_firmware_item_final_version: >-
+      {{ idrac_update_firmware_versions_after[firmware_item.normalized_name] | default('UNKNOWN') }}
+    idrac_update_firmware_item_verified: >-
+      {{
+        idrac_update_firmware_versions_after[firmware_item.normalized_name] | default('UNKNOWN')
+        == firmware_item.expected_installed_version
+      }}
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+
+- name: Apply item | Query active firmware jobs before submit attempt
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/JobService/Jobs"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: [200, 404]
+    timeout: 30
+  register: idrac_update_job_list_before_submit
+  failed_when: false
+  no_log: "{{ idrac_update_no_log }}"
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+
+- name: Apply item | Fetch active job details before submit attempt
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}{{ item['@odata.id'] }}"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: [200, 404]
+    timeout: 30
+  loop: "{{ idrac_update_job_list_before_submit.json.Members | default([]) }}"
+  loop_control:
+    label: "{{ item['@odata.id'] }}"
+  register: idrac_update_job_details_before_submit
+  failed_when: false
+  no_log: "{{ idrac_update_no_log }}"
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+    - idrac_update_job_list_before_submit.json.Members is defined
+
+- name: Apply item | Build active Redfish job list before submit attempt
+  ansible.builtin.set_fact:
+    idrac_update_active_jobs_before_submit: >-
+      {{
+        idrac_update_job_details_before_submit.results | default([])
+        | selectattr('json', 'defined')
+        | map(attribute='json')
+        | selectattr('JobState', 'defined')
+        | selectattr('JobState', 'in', ['New', 'Scheduled', 'Starting', 'Running'])
+        | list
+      }}
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+
+- name: Apply item | Wait for active Redfish jobs before submit attempt
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}{{ item['@odata.id'] | default('/redfish/v1/JobService/Jobs/' ~ item.Id) }}"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: [200, 404]
+    timeout: 30
+  loop: "{{ idrac_update_active_jobs_before_submit | default([]) }}"
+  loop_control:
+    label: "{{ item.Id | default(item['@odata.id'] | default('active-job')) }}"
+  register: idrac_update_active_job_wait
+  retries: "{{ idrac_update_redfish_recovery_retries }}"
+  delay: "{{ idrac_update_redfish_recovery_delay }}"
+  until: >-
+    idrac_update_active_job_wait.status == 404
+    or idrac_update_active_job_wait.json.JobState | default('Unknown') not in ['New', 'Scheduled', 'Starting', 'Running']
+  no_log: "{{ idrac_update_no_log }}"
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+    - idrac_update_active_jobs_before_submit | default([]) | length > 0
+
+- name: Apply item | Refresh inventory after waiting for active jobs
+  ansible.builtin.include_tasks: apply_refresh_firmware_inventory.yml
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+    - idrac_update_active_jobs_before_submit | default([]) | length > 0
+
+- name: Apply item | Recheck expected version after waiting for active jobs
+  ansible.builtin.set_fact:
+    idrac_update_firmware_item_final_version: >-
+      {{ idrac_update_firmware_versions_after[firmware_item.normalized_name] | default('UNKNOWN') }}
+    idrac_update_firmware_item_verified: >-
+      {{
+        idrac_update_firmware_versions_after[firmware_item.normalized_name] | default('UNKNOWN')
+        == firmware_item.expected_installed_version
+      }}
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+    - idrac_update_active_jobs_before_submit | default([]) | length > 0
+
+- name: Apply item | Submit firmware package
+  dellemc.openmanage.redfish_firmware:
+    baseuri: "{{ idrac_ip }}:{{ idrac_update_port }}"
+    username: "{{ idrac_update_user }}"
+    password: "{{ idrac_update_password }}"
+    image_uri: "{{ firmware_item.firmware_image_uri }}"
+    transfer_protocol: "{{ firmware_item.transfer_protocol }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    job_wait: true
+    job_wait_timeout: "{{ idrac_job_wait_timeout | default(1800) }}"
+    timeout: 60
+  register: idrac_update_firmware_submit_result
+  ignore_errors: true
+  no_log: "{{ idrac_update_no_log }}"
+  changed_when: idrac_update_firmware_submit_result is succeeded
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+
+- name: Apply item | Fail on non-transient firmware submission errors
+  ansible.builtin.fail:
+    msg: >-
+      Firmware submission failed with a non-transient error for {{ firmware_item.name }}
+      on {{ inventory_hostname }}: {{ idrac_update_firmware_submit_result.msg | default('unknown error') }}
+  vars:
+    idrac_update_submit_error_text: "{{ idrac_update_firmware_submit_result.msg | default('') | lower }}"
+    idrac_update_submit_error_is_transient: >-
+      {{
+        'jsondecodeerror' in idrac_update_submit_error_text
+        or 'no start of json char' in idrac_update_submit_error_text
+        or 'expecting value' in idrac_update_submit_error_text
+        or 'empty response' in idrac_update_submit_error_text
+        or 'http 503' in idrac_update_submit_error_text
+        or '503' in idrac_update_submit_error_text
+        or 'connection reset' in idrac_update_submit_error_text
+        or 'connection refused' in idrac_update_submit_error_text
+        or 'timed out' in idrac_update_submit_error_text
+        or 'timeout' in idrac_update_submit_error_text
+      }}
+  when:
+    - idrac_update_firmware_submit_result is defined
+    - idrac_update_firmware_submit_result is failed
+    - not idrac_update_submit_error_is_transient | bool
+
+- name: Apply item | Record submit attempt outcome
+  ansible.builtin.set_fact:
+    idrac_update_firmware_item_attempts: "{{ idrac_update_firmware_item_attempts | int + 1 }}"
+    idrac_update_firmware_item_submitted: >-
+      {{
+        idrac_update_firmware_item_submitted | bool
+        or idrac_update_firmware_submit_result is succeeded
+      }}
+    idrac_update_firmware_item_module_changed: >-
+      {{
+        idrac_update_firmware_item_module_changed | bool
+        or idrac_update_firmware_submit_result.changed | default(false)
+      }}
+    idrac_update_firmware_item_job_id: >-
+      {{
+        idrac_update_firmware_submit_result.task.id
+        | default(idrac_update_firmware_submit_result.task.Id
+        | default(idrac_update_firmware_submit_result.task.uri
+        | default(idrac_update_firmware_item_job_id | default(''))))
+      }}
+    idrac_update_firmware_item_error: >-
+      {{
+        ''
+        if idrac_update_firmware_submit_result is succeeded
+        else idrac_update_firmware_submit_result.msg | default('Firmware submit failed')
+      }}
+  when:
+    - idrac_update_firmware_submit_result is defined
+    - idrac_update_firmware_submit_result.skipped is not defined
+
+- name: Apply item | Pause before next transient retry
+  ansible.builtin.pause:
+    seconds: "{{ idrac_update_firmware_submit_retry_delay }}"
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+    - idrac_update_firmware_item_attempts | int < idrac_update_firmware_submit_retries | int
