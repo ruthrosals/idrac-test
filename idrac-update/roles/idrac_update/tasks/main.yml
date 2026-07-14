@@ -1262,19 +1262,29 @@
         | list
         | length > 0
       }}
-    verification_passed: >-
+    verification_matches: >-
       {{
         item.approved | bool
         and not item.excluded | bool
         and item.applicability == 'applicable'
         and final_version == expected_version
       }}
+    verification_passed: >-
+      {{ none if idrac_update_mode == 'check' else verification_matches }}
+    verification_status: >-
+      {% if idrac_update_mode == 'check' %}not_run_check_mode
+      {% elif item.should_install | bool and verification_matches | bool %}passed
+      {% elif item.should_install | bool %}failed
+      {% elif verification_matches | bool %}not_required_already_compliant
+      {% else %}not_required
+      {% endif %}
     final_action: >-
-      {% if item.excluded | bool %}excluded
+      {% if idrac_update_mode == 'check' %}{{ item.action | trim }}
+      {% elif item.excluded | bool %}excluded
       {% elif item.applicability == 'not_applicable' %}not_applicable
       {% elif item.action == 'unknown' %}unknown
-      {% elif verification_passed and changed %}installed
-      {% elif verification_passed and not item.should_install | bool %}compliant
+      {% elif verification_matches | bool and changed %}installed
+      {% elif verification_matches | bool and not item.should_install | bool %}compliant
       {% elif item.should_install | bool %}verification_failed
       {% else %}{{ item.action | trim }}
       {% endif %}
@@ -1299,6 +1309,7 @@
       final_version: "{{ final_version }}"
       changed: "{{ changed }}"
       skipped: "{{ skipped }}"
+      verification_status: "{{ verification_status | trim }}"
       verification_passed: "{{ verification_passed }}"
 
 - name: Post-check | Firmware verification report
@@ -1495,6 +1506,7 @@
       final_version: "{{ item.1.final_version }}"
       changed: "{{ item.1.changed }}"
       skipped: "{{ item.1.skipped }}"
+      verification_status: "{{ item.1.verification_status }}"
       verification_passed: "{{ item.1.verification_passed }}"
   when: idrac_update_report_enabled | bool
 
@@ -1517,7 +1529,7 @@
 - name: Report | Export latest update summary CSV  # noqa: run-once[task]
   ansible.builtin.copy:
     content: |
-      inventory_hostname,idrac_ip,mode,component,component_name,current_version,target_version,expected_installed_version,applicability,approved,excluded,allow_downgrade,action,final_version,changed,skipped,verification_passed
+      inventory_hostname,idrac_ip,mode,component,component_name,current_version,target_version,expected_installed_version,applicability,approved,excluded,allow_downgrade,action,final_version,changed,skipped,verification_status,verification_passed
       {% for row in hostvars.localhost.idrac_update_csv_rows | default([]) %}
       {{
         [
@@ -1537,6 +1549,7 @@
           row.final_version,
           row.changed,
           row.skipped,
+          row.verification_status,
           row.verification_passed
         ] | map('to_json') | join(',')
       }}
