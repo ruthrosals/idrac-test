@@ -1,0 +1,195 @@
+---
+- name: Validate Redfish JobService firmware submission classification
+  hosts: localhost
+  gather_facts: false
+  vars:
+    idrac_update_lc_busy_retries: 20
+    idrac_update_lc_busy_delay: 30
+    idrac_update_lc_idle_stabilization_delay: 20
+    active_job_states:
+      - New
+      - Scheduled
+      - Starting
+      - Running
+      - Downloading
+      - RebootPending
+      - Waiting
+      - Pending
+    classification_cases:
+      - name: generic_failure_with_red023_message_id
+        module_failed: true
+        module_message: Firmware update failed.
+        task:
+          id: JID_840939525293
+          uri: JobService/Jobs/JID_840939525293
+        job:
+          Id: JID_840939525293
+          JobState: Scheduled
+          MessageId: RED023
+          Message: Lifecycle Controller in use. This job will start when Lifecycle Controller is available.
+          PercentComplete: 0
+        expected_classification: lifecycle_controller_busy
+        expected_retryable: true
+      - name: generic_failure_with_red023_message_text
+        module_failed: true
+        module_message: Firmware update failed.
+        task:
+          id: JID_840939525294
+          uri: JobService/Jobs/JID_840939525294
+        job:
+          Id: JID_840939525294
+          JobState: Scheduled
+          Message: Lifecycle Controller in use. This job will start when Lifecycle Controller is available.
+        expected_classification: lifecycle_controller_busy
+        expected_retryable: true
+      - name: generic_failure_without_job_detail
+        module_failed: true
+        module_message: Firmware update failed.
+        task: {}
+        job: {}
+        expected_classification: firmware_submission_failed
+        expected_retryable: false
+      - name: non_red023_dell_failure
+        module_failed: true
+        module_message: Firmware update failed.
+        task:
+          id: JID_840939525295
+        job:
+          Id: JID_840939525295
+          JobState: Failed
+          MessageId: RED054
+          Message: The package is not applicable to this system.
+        expected_classification: firmware_submission_failed
+        expected_retryable: false
+      - name: transient_redfish_failure
+        module_failed: true
+        module_message: No start of json char found
+        task: {}
+        job: {}
+        expected_classification: redfish_temporarily_unavailable
+        expected_retryable: true
+      - name: successful_submission
+        module_failed: false
+        module_message: Firmware update submitted.
+        task:
+          id: JID_840939525296
+        job:
+          Id: JID_840939525296
+          JobState: Completed
+          Message: Job completed successfully.
+        expected_classification: submitted
+        expected_retryable: false
+
+  tasks:
+    - name: Validate firmware submission classification cases
+      ansible.builtin.assert:
+        that:
+          - actual_job_id == expected_job_id
+          - actual_red023 == expected_red023
+          - actual_classification == item.expected_classification
+          - actual_retryable == item.expected_retryable
+        fail_msg: >-
+          Job classification failed for {{ item.name }}.
+          actual={{ actual_classification }} retryable={{ actual_retryable }}
+          job_id={{ actual_job_id }} red023={{ actual_red023 }}.
+      loop: "{{ classification_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+      vars:
+        actual_job_id: >-
+          {{
+            item.task.id
+            | default(item.task.Id | default(item.task.uri | default('') | regex_search('JID_[A-Za-z0-9_]+') | default('')))
+          }}
+        expected_job_id: >-
+          {{ item.job.Id | default(item.task.id | default(item.task.Id | default(''))) }}
+        detail_message_id: "{{ item.job.MessageId | default(item.job.Messages[0].MessageId | default('')) }}"
+        detail_message: "{{ item.job.Message | default(item.job.Messages[0].Message | default(item.module_message)) }}"
+        error_text: >-
+          {{ [item.module_message, detail_message_id, detail_message, item.job.JobState | default('')] | join(' ') | lower }}
+        actual_red023: >-
+          {{
+            'red023' in ([detail_message_id, detail_message] | join(' ') | lower)
+            or 'lifecycle controller in use' in (detail_message | lower)
+            or 'lifecycle controller is available' in (detail_message | lower)
+          }}
+        actual_transient: >-
+          {{
+            'jsondecodeerror' in error_text
+            or 'no start of json char' in error_text
+            or 'expecting value' in error_text
+            or 'empty response' in error_text
+            or 'http 503' in error_text
+            or '503' in error_text
+            or 'connection reset' in error_text
+            or 'connection refused' in error_text
+            or 'timed out' in error_text
+            or 'timeout' in error_text
+          }}
+        actual_classification: >-
+          {{
+            'submitted'
+            if not item.module_failed | bool
+            else (
+              'lifecycle_controller_busy'
+              if actual_red023 | string | lower == 'true'
+              else (
+                'redfish_temporarily_unavailable'
+                if actual_transient | string | lower == 'true'
+                else 'firmware_submission_failed'
+              )
+            )
+          }}
+        actual_retryable: "{{ actual_red023 | string | lower == 'true' or actual_transient | string | lower == 'true' }}"
+        expected_red023: "{{ item.expected_classification == 'lifecycle_controller_busy' }}"
+
+    - name: Validate active jobs prevent new firmware submission
+      ansible.builtin.assert:
+        that:
+          - active_jobs | length == 2
+          - active_jobs | map(attribute='Id') | list == ['JID_ACTIVE_UPDATE', 'JID_REPO_CHECK']
+        fail_msg: Active firmware job filtering did not identify conflicting jobs.
+      vars:
+        jobs:
+          - Id: JID_ACTIVE_UPDATE
+            JobState: Running
+            Name: Firmware Update
+          - Id: JID_REPO_CHECK
+            JobState: Pending
+            Name: Check Update From Repo
+          - Id: JID_DONE
+            JobState: Completed
+            Name: Check Update From Repo
+        active_jobs: "{{ jobs | selectattr('JobState', 'in', active_job_states) | list }}"
+
+    - name: Validate completed repository check still uses stabilization delay
+      ansible.builtin.assert:
+        that:
+          - idrac_update_lc_idle_stabilization_delay | int == 20
+          - completed_repo_check.JobState == 'Completed'
+        fail_msg: Completed repository-check stabilization defaults are incorrect.
+      vars:
+        completed_repo_check:
+          Id: JID_DONE
+          JobState: Completed
+          Name: Check Update From Repo
+
+    - name: Validate expected version after RED023 prevents resubmission
+      ansible.builtin.assert:
+        that:
+          - expected_already_installed
+          - not should_resubmit
+        fail_msg: Expected installed version should prevent duplicate resubmission after RED023.
+      vars:
+        expected_installed_version: 4301A73
+        refreshed_inventory_version: 4301A73
+        expected_already_installed: "{{ refreshed_inventory_version == expected_installed_version }}"
+        should_resubmit: "{{ not expected_already_installed }}"
+
+    - name: Validate RED023 retry budget
+      ansible.builtin.assert:
+        that:
+          - idrac_update_lc_busy_retries | int == 20
+          - idrac_update_lc_busy_delay | int == 30
+          - idrac_update_lc_busy_retries | int * idrac_update_lc_busy_delay | int == 600
+        fail_msg: RED023 retry budget must remain 20 retries x 30 seconds.

@@ -88,8 +88,11 @@ idrac_update_component_handlers:
 idrac_update_post_idrac_stabilization_delay: 30
 idrac_update_firmware_submit_retries: 3
 idrac_update_firmware_submit_retry_delay: 20
-idrac_update_lifecycle_controller_busy_retries: 20
-idrac_update_lifecycle_controller_busy_retry_delay: 30
+idrac_update_lc_busy_retries: 20
+idrac_update_lc_busy_delay: 30
+idrac_update_lc_idle_stabilization_delay: 20
+idrac_update_lifecycle_controller_busy_retries: "{{ idrac_update_lc_busy_retries }}"
+idrac_update_lifecycle_controller_busy_retry_delay: "{{ idrac_update_lc_busy_delay }}"
 idrac_update_redfish_recovery_retries: 60
 idrac_update_redfish_recovery_delay: 10
 

@@ -7,6 +7,15 @@
     idrac_update_firmware_item_job_id: ""
     idrac_update_firmware_item_error: ""
     idrac_update_firmware_item_status: "pending"
+    idrac_update_firmware_item_module_message: ""
+    idrac_update_firmware_item_job_uri: ""
+    idrac_update_firmware_item_dell_message_id: ""
+    idrac_update_firmware_item_dell_message: ""
+    idrac_update_firmware_item_job_state: ""
+    idrac_update_firmware_item_percent_complete: ""
+    idrac_update_firmware_item_submission_classification: "pending"
+    idrac_update_firmware_item_retryable: false
+    idrac_update_firmware_item_wait_reason: ""
     idrac_update_firmware_item_lc_busy_count: 0
     idrac_update_firmware_item_verified: false
     idrac_update_firmware_item_final_version: "{{ firmware_item.current_version }}"
@@ -54,6 +63,15 @@
       submitted: false
       job_id: "{{ idrac_update_firmware_item_job_id }}"
       module_changed: "{{ idrac_update_firmware_item_module_changed }}"
+      module_message: "{{ idrac_update_firmware_item_module_message }}"
+      job_uri: "{{ idrac_update_firmware_item_job_uri }}"
+      dell_message_id: "{{ idrac_update_firmware_item_dell_message_id }}"
+      dell_message: "{{ idrac_update_firmware_item_dell_message }}"
+      job_state: "{{ idrac_update_firmware_item_job_state }}"
+      percent_complete: "{{ idrac_update_firmware_item_percent_complete }}"
+      submission_classification: "{{ idrac_update_firmware_item_submission_classification }}"
+      retryable: "{{ idrac_update_firmware_item_retryable }}"
+      wait_reason: "{{ idrac_update_firmware_item_wait_reason }}"
       before_version: "{{ firmware_item.current_version }}"
       expected_installed_version: "{{ firmware_item.expected_installed_version }}"
       expected_version: "{{ firmware_item.expected_installed_version }}"
@@ -77,10 +95,13 @@
 - name: Apply item | Fail if firmware submission did not succeed
   ansible.builtin.fail:
     msg: >-
-      Firmware package failed before submission completed on {{ inventory_hostname }}.
-      component={{ firmware_item.name }} attempts={{ idrac_update_firmware_item_attempts }}
+      Firmware package did not complete submission for {{ firmware_item.name }}
+      on {{ inventory_hostname }}.
+      attempts={{ idrac_update_firmware_item_attempts }}
       status={{ idrac_update_firmware_item_status }}
-      error={{ idrac_update_firmware_item_error }}.
+      Last Dell job={{ idrac_update_firmware_item_job_id | default('UNKNOWN') }}
+      Message ID={{ idrac_update_firmware_item_dell_message_id | default('UNKNOWN') }}
+      Message={{ idrac_update_firmware_item_dell_message | default(idrac_update_firmware_item_error) }}.
   when:
     - not idrac_update_firmware_item_submitted | bool
     - not idrac_update_firmware_item_verified | bool
@@ -142,6 +163,15 @@
       submitted: "{{ idrac_update_firmware_item_submitted }}"
       job_id: "{{ idrac_update_firmware_item_job_id }}"
       module_changed: "{{ idrac_update_firmware_item_module_changed }}"
+      module_message: "{{ idrac_update_firmware_item_module_message }}"
+      job_uri: "{{ idrac_update_firmware_item_job_uri }}"
+      dell_message_id: "{{ idrac_update_firmware_item_dell_message_id }}"
+      dell_message: "{{ idrac_update_firmware_item_dell_message }}"
+      job_state: "{{ idrac_update_firmware_item_job_state }}"
+      percent_complete: "{{ idrac_update_firmware_item_percent_complete }}"
+      submission_classification: "{{ idrac_update_firmware_item_submission_classification }}"
+      retryable: "{{ idrac_update_firmware_item_retryable }}"
+      wait_reason: "{{ idrac_update_firmware_item_wait_reason }}"
       before_version: "{{ firmware_item.current_version }}"
       expected_installed_version: "{{ firmware_item.expected_installed_version }}"
       expected_version: "{{ firmware_item.expected_installed_version }}"
