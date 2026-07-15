@@ -8,7 +8,7 @@ WASABI_ENDPOINT="https://s3.ca-central-1.wasabisys.com"
 AWS_PROFILE="wasabi"
 OUTPUT_JSON="/tmp/idrac_update_items_generated.json"
 
-ALLOWED_COMPONENTS=" idrac idrac_lifecycle_controller uefi_diagnostics os_driver_pack "
+ALLOWED_COMPONENTS=" idrac idrac_lifecycle_controller lifecycle_controller uefi_diagnostics os_driver_pack "
 
 TMP_JSON_ITEMS=""
 declare -a uploaded_objects=()
@@ -41,7 +41,7 @@ require_command() {
 validate_component() {
   local component="$1"
   if [[ "$ALLOWED_COMPONENTS" != *" $component "* ]]; then
-    echo "ERROR: Unsupported component '$component'. Allowed: idrac idrac_lifecycle_controller uefi_diagnostics os_driver_pack" >&2
+    echo "ERROR: Unsupported component '$component'. Allowed: idrac idrac_lifecycle_controller lifecycle_controller uefi_diagnostics os_driver_pack" >&2
     exit 1
   fi
 }
@@ -196,6 +196,11 @@ while IFS=, read -r component version source_file target_version installed_versi
 
   validate_component "$component"
 
+  repository_component="$component"
+  if [[ "$component" == "idrac" || "$component" == "idrac_lifecycle_controller" ]]; then
+    repository_component="lifecycle_controller"
+  fi
+
   if [[ -n "$allow_downgrade" && "$allow_downgrade" != "true" && "$allow_downgrade" != "false" ]]; then
     echo "ERROR: Line $line_number allow_downgrade must be true or false when supplied." >&2
     exit 1
@@ -212,10 +217,10 @@ while IFS=, read -r component version source_file target_version installed_versi
   fi
 
   filename="$(basename "$source_file")"
-  destination_dir="$FIRMWARE_ROOT/$component/$version"
+  destination_dir="$FIRMWARE_ROOT/$repository_component/$version"
   destination_file="$destination_dir/$filename"
-  firmware_url="$NGINX_BASE_URL/$component/$version/$filename"
-  wasabi_object="s3://$BUCKET/firmware/dell/$component/$version/$filename"
+  firmware_url="$NGINX_BASE_URL/$repository_component/$version/$filename"
+  wasabi_object="s3://$BUCKET/firmware/dell/$repository_component/$version/$filename"
   destination_existed=false
 
   if [[ -e "$destination_file" ]]; then
@@ -230,7 +235,7 @@ while IFS=, read -r component version source_file target_version installed_versi
   fi
 
   chown -R cloudadm:cloudadm "$destination_dir"
-  find "$FIRMWARE_ROOT/$component" -type d -exec chmod 755 {} +
+  find "$FIRMWARE_ROOT/$repository_component" -type d -exec chmod 755 {} +
   chmod 644 "$destination_file"
 
   echo "Package copied: $destination_file"

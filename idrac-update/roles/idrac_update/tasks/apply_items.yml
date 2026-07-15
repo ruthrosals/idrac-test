@@ -13,6 +13,10 @@
       allow_downgrade={{ item.allow_downgrade }}
       drift={{ item.drift }}
       should_install={{ item.should_install }}
+      image_uri_status={{ item.image_uri_status }}
+      image_uri_reachable={{ item.image_uri_reachable }}
+      deployment_ready={{ item.deployment_ready }}
+      readiness_reason={{ item.readiness_reason }}
   loop: "{{ idrac_update_install_plan }}"
   loop_control:
     label: "{{ item.name }}"
@@ -29,60 +33,6 @@
     - idrac_update_mode == 'apply'
     - item.handler_restart_redfish | bool
     - item.should_install | bool
-
-- name: Pre-flight | Check firmware image URI
-  ansible.builtin.uri:
-    url: "{{ item.firmware_image_uri }}"
-    method: HEAD
-    follow_redirects: all
-    status_code: "{{ idrac_update_image_uri_status_codes }}"
-    timeout: "{{ idrac_update_image_uri_timeout }}"
-  loop: "{{ idrac_update_install_plan }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: idrac_update_image_uri_checks
-  failed_when: false
-  when:
-    - idrac_update_validate_image_uri | bool
-    - item.approved | bool
-    - not item.excluded | bool
-    - item.firmware_image_uri is defined
-    - >-
-      idrac_update_mode == 'check'
-      or item.should_install | bool
-
-- name: Pre-flight | Warn about unreachable firmware image URI
-  ansible.builtin.debug:
-    msg:
-      warning: "Firmware image URI is not reachable from the Ansible control node"
-      mode: "{{ idrac_update_mode }}"
-      component: "{{ item.item.name }}"
-      target_version: "{{ item.item.target_version }}"
-      firmware_image_uri: "{{ item.item.firmware_image_uri }}"
-      expected_status_codes: "{{ idrac_update_image_uri_status_codes }}"
-      status: "{{ item.status | default('no response') }}"
-      error: "{{ item.msg | default('unknown') }}"
-  loop: "{{ idrac_update_image_uri_checks.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item.name | default('unknown') }}"
-  when:
-    - not item.skipped | default(false)
-    - item.status | default(0) not in idrac_update_image_uri_status_codes
-
-- name: Pre-flight | Fail if firmware image URI is unreachable
-  ansible.builtin.fail:
-    msg: >-
-      Firmware image URI validation failed for {{ item.item.name }}.
-      Expected HTTP status {{ idrac_update_image_uri_status_codes }},
-      got {{ item.status | default('no response') }}.
-      URI: {{ item.item.firmware_image_uri }}.
-      Fix the path or set idrac_update_validate_image_uri=false to bypass this pre-flight check.
-  loop: "{{ idrac_update_image_uri_checks.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item.name | default('unknown') }}"
-  when:
-    - not item.skipped | default(false)
-    - item.status | default(0) not in idrac_update_image_uri_status_codes
 
 - name: Apply mode | Build ordered firmware execution plan
   ansible.builtin.set_fact:
@@ -127,6 +77,11 @@
       handler_restart_redfish: "{{ item.handler_restart_redfish }}"
       handler_execution_order: "{{ item.handler_execution_order }}"
       inventory_source: "{{ item.inventory_source }}"
+      firmware_image_uri: "{{ item.firmware_image_uri }}"
+      image_uri_reachable: "{{ item.image_uri_reachable }}"
+      image_uri_status: "{{ item.image_uri_status }}"
+      deployment_ready: "{{ item.deployment_ready }}"
+      readiness_reason: "{{ item.readiness_reason }}"
       submitted: false
       job_id: ""
       module_changed: false

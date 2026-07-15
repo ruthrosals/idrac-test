@@ -135,6 +135,11 @@
       excluded: "{{ item.1.excluded }}"
       allow_downgrade: "{{ item.1.allow_downgrade }}"
       action: "{{ item.1.action }}"
+      firmware_image_uri: "{{ item.1.firmware_image_uri }}"
+      image_uri_reachable: "{{ item.1.image_uri_reachable }}"
+      image_uri_status: "{{ item.1.image_uri_status }}"
+      deployment_ready: "{{ item.1.deployment_ready }}"
+      readiness_reason: "{{ item.1.readiness_reason }}"
       final_version: "{{ item.1.final_version }}"
       changed: "{{ item.1.changed }}"
       skipped: "{{ item.1.skipped }}"
@@ -210,7 +215,7 @@
 - name: Report | Export staged update summary CSV  # noqa: run-once[task]
   ansible.builtin.copy:
     content: |
-      inventory_hostname,idrac_ip,mode,component,component_name,current_version,target_version,expected_installed_version,handler_comparator,handler_installer,handler_restart_redfish,handler_execution_order,inventory_source,applicability,approved,excluded,allow_downgrade,action,final_version,changed,skipped,verification_status,verification_passed
+      inventory_hostname,idrac_ip,mode,component,component_name,current_version,target_version,expected_installed_version,handler_comparator,handler_installer,handler_restart_redfish,handler_execution_order,inventory_source,applicability,approved,excluded,allow_downgrade,action,firmware_image_uri,image_uri_reachable,image_uri_status,deployment_ready,readiness_reason,final_version,changed,skipped,verification_status,verification_passed
       {% for row in hostvars.localhost.idrac_update_csv_rows | default([]) %}
       {{
         [
@@ -232,6 +237,11 @@
           row.excluded,
           row.allow_downgrade,
           row.action,
+          row.firmware_image_uri,
+          row.image_uri_reachable,
+          row.image_uri_status,
+          row.deployment_ready,
+          row.readiness_reason,
           row.final_version,
           row.changed,
           row.skipped,

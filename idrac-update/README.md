@@ -46,6 +46,15 @@ For most package updates, the fields normally reviewed are:
 - `installed_version`: expected Redfish-reported version after install
 - `allow_downgrade`: set to `true` only for an intentional downgrade
 
+For the iDRAC with Lifecycle Controller DUP, keep the canonical playbook name as `idrac_lifecycle_controller`, but use the repository folder `lifecycle_controller`:
+
+```text
+Host path: /opt/firmware-repo/dell/lifecycle_controller/<version>/<filename>
+Nginx URL: http://10.107.0.167:8090/firmware/dell/lifecycle_controller/<version>/<filename>
+```
+
+Do not use the old `idrac` repository folder for this component.
+
 The helper script processes every CSV row in one execution:
 
 ```bash

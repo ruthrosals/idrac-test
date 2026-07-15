@@ -143,6 +143,26 @@
           )
         )
       }}
+    uri_validation: >-
+      {{
+        idrac_update_image_uri_validation_by_component[item.name_normalized]
+        | default({
+            'image_uri_reachable': true,
+            'image_uri_status': 'not_validated',
+            'http_status': 'not_validated',
+            'http_method': 'HEAD',
+            'expected_status_codes': idrac_update_image_uri_status_codes,
+            'validation_error': ''
+          })
+      }}
+    image_uri_reachable: "{{ uri_validation.image_uri_reachable | default(true) | bool }}"
+    image_uri_status: "{{ uri_validation.image_uri_status | default('not_validated') }}"
+    image_uri_error: "{{ uri_validation.validation_error | default('') }}"
+    deployment_ready: "{{ uri_validation.image_uri_reachable | default(true) | bool }}"
+    readiness_reason: >-
+      {% if not (uri_validation.image_uri_reachable | default(true) | bool) %}firmware_image_unreachable
+      {% else %}ready
+      {% endif %}
     compliance_item:
       name: "{{ item.name }}"
       component: "{{ item.name_normalized }}"
@@ -152,6 +172,13 @@
       expected_installed_version: "{{ expected_version }}"
       firmware_image_uri: "{{ item.firmware_image_uri }}"
       transfer_protocol: "{{ item.transfer_protocol }}"
+      image_uri_reachable: "{{ image_uri_reachable }}"
+      image_uri_status: "{{ image_uri_status }}"
+      image_uri_http_method: "{{ uri_validation.http_method | default('HEAD') }}"
+      image_uri_expected_status_codes: "{{ uri_validation.expected_status_codes | default(idrac_update_image_uri_status_codes) }}"
+      image_uri_validation_error: "{{ image_uri_error }}"
+      deployment_ready: "{{ deployment_ready }}"
+      readiness_reason: "{{ readiness_reason | trim }}"
       applicability: "{{ 'applicable' if item.name_normalized in idrac_update_firmware_versions else 'not_applicable' }}"
       approved: "{{ approved }}"
       excluded: "{{ excluded }}"

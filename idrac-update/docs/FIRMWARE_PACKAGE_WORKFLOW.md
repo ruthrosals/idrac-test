@@ -50,12 +50,21 @@ Working example:
 
 ```csv
 component,version,source_file,target_version,installed_version,name,transfer_protocol,allow_downgrade
-idrac,7.00.00.184,/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE,7.00.00.184,7.00.00.184,idrac_lifecycle_controller,HTTP,false
+lifecycle_controller,7.00.00.184,/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE,7.00.00.184,7.00.00.184,idrac_lifecycle_controller,HTTP,false
 uefi_diagnostics,4301.74,/home/cloudadm/packages/Diagnostics_Application_R30YT_WN64_4301A73_4301.74_01.EXE,4301.74,4301A73,uefi_diagnostics,HTTP,false
 os_driver_pack,24.01.04,/home/cloudadm/packages/Drivers-for-OS-Deployment_Application_NROJY_WN64_24.01.04_A00.EXE,24.01.04,<confirmed_redfish_version>,os_driver_pack,HTTP,false
 ```
 
 Do not guess the Redfish installed version for OS Driver Pack. Confirm it through the discovery report before adding or applying that package.
+
+For the iDRAC with Lifecycle Controller DUP, the CSV `name` remains `idrac_lifecycle_controller`, but the repository `component` folder is `lifecycle_controller`. This creates paths like:
+
+```text
+/opt/firmware-repo/dell/lifecycle_controller/<version>/<filename>
+http://10.107.0.167:8090/firmware/dell/lifecycle_controller/<version>/<filename>
+```
+
+Do not use the old `idrac` repository folder for the iDRAC with Lifecycle Controller DUP.
 
 Field meaning:
 
@@ -160,13 +169,13 @@ The generated JSON is also written to:
 Test a package through Nginx:
 
 ```bash
-curl -I http://10.107.0.167:8090/firmware/dell/idrac/7.00.00.184/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE
+curl -I http://10.107.0.167:8090/firmware/dell/lifecycle_controller/7.00.00.184/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE
 ```
 
 Test a package in Wasabi:
 
 ```bash
-aws s3 ls s3://breqwatr-firmware-repo/firmware/dell/idrac/7.00.00.184/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE \
+aws s3 ls s3://breqwatr-firmware-repo/firmware/dell/lifecycle_controller/7.00.00.184/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE \
   --profile wasabi \
   --endpoint-url https://s3.ca-central-1.wasabisys.com
 ```

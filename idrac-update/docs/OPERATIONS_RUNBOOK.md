@@ -39,6 +39,18 @@ Recommended review items:
 - `should_install`
 - `applicability`
 - `firmware_image_uri`
+- `image_uri_status`
+- `image_uri_reachable`
+- `deployment_ready`
+- `readiness_reason`
+
+Firmware URL validation runs in both check and apply modes. In check mode, an unreachable package URL is reported as `deployment_ready: false` with `readiness_reason: firmware_image_unreachable`, but the play continues so drift and readiness can be reviewed for every host and item. In apply mode, an unreachable package URL fails before any firmware job is submitted.
+
+For `idrac_lifecycle_controller`, the firmware package must be served from the `lifecycle_controller` repository folder:
+
+```text
+http://10.107.0.167:8090/firmware/dell/lifecycle_controller/<version>/<filename>
+```
 
 In check mode, verification is intentionally not run:
 

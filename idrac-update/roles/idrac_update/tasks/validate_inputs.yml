@@ -80,6 +80,8 @@
       results: []
     idrac_update_image_uri_checks:
       results: []
+    idrac_update_image_uri_validation_results: []
+    idrac_update_image_uri_validation_by_component: {}
     idrac_update_final_report: []
     idrac_update_idrac_expected_version: ""
     idrac_update_idrac_update_expected: false
@@ -156,3 +158,105 @@
   loop: "{{ idrac_update_items_normalized }}"
   loop_control:
     label: "{{ item.name | default('unknown') }}"
+
+- name: Pre-flight | Check firmware image URI
+  ansible.builtin.uri:
+    url: "{{ item.firmware_image_uri }}"
+    method: HEAD
+    follow_redirects: all
+    status_code: "{{ idrac_update_image_uri_status_codes }}"
+    timeout: "{{ idrac_update_image_uri_timeout }}"
+  loop: "{{ idrac_update_items_normalized }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: idrac_update_image_uri_checks
+  failed_when: false
+  when:
+    - idrac_update_validate_image_uri | bool
+    - item.firmware_image_uri is defined
+
+- name: Pre-flight | Build firmware image URI validation results
+  ansible.builtin.set_fact:
+    idrac_update_image_uri_validation_results: "{{ idrac_update_image_uri_validation_results + [image_uri_validation_result] }}"
+  loop: "{{ idrac_update_image_uri_checks.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('unknown') }}"
+  vars:
+    image_uri_status: "{{ item.status | default(0) | int }}"
+    image_uri_validation_result:
+      component: "{{ item.item.name_normalized }}"
+      name: "{{ item.item.name }}"
+      firmware_image_uri: "{{ item.item.firmware_image_uri }}"
+      http_method: HEAD
+      image_uri_status: "{{ image_uri_status }}"
+      http_status: "{{ image_uri_status }}"
+      expected_status_codes: "{{ idrac_update_image_uri_status_codes }}"
+      image_uri_reachable: "{{ image_uri_status | int in idrac_update_image_uri_status_codes }}"
+      reachable: "{{ image_uri_status | int in idrac_update_image_uri_status_codes }}"
+      validation_error: "{{ item.msg | default('') }}"
+  when: idrac_update_validate_image_uri | bool
+
+- name: Pre-flight | Build skipped firmware image URI validation results
+  ansible.builtin.set_fact:
+    idrac_update_image_uri_validation_results: "{{ idrac_update_image_uri_validation_results + [image_uri_validation_result] }}"
+  loop: "{{ idrac_update_items_normalized }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    image_uri_validation_result:
+      component: "{{ item.name_normalized }}"
+      name: "{{ item.name }}"
+      firmware_image_uri: "{{ item.firmware_image_uri }}"
+      http_method: HEAD
+      image_uri_status: "not_validated"
+      http_status: "not_validated"
+      expected_status_codes: "{{ idrac_update_image_uri_status_codes }}"
+      image_uri_reachable: true
+      reachable: true
+      validation_error: "validation disabled"
+  when: not (idrac_update_validate_image_uri | bool)
+
+- name: Pre-flight | Build firmware image URI validation lookup
+  ansible.builtin.set_fact:
+    idrac_update_image_uri_validation_by_component: >-
+      {{
+        idrac_update_image_uri_validation_by_component
+        | combine({item.component: item})
+      }}
+  loop: "{{ idrac_update_image_uri_validation_results }}"
+  loop_control:
+    label: "{{ item.component }}"
+
+- name: Pre-flight | Warn about unreachable firmware image URI
+  ansible.builtin.debug:
+    msg:
+      warning: "Firmware image URI is not reachable from the Ansible control node"
+      mode: "{{ idrac_update_mode }}"
+      component: "{{ item.component }}"
+      firmware_image_uri: "{{ item.firmware_image_uri }}"
+      http_method: "{{ item.http_method }}"
+      image_uri_status: "{{ item.image_uri_status }}"
+      expected_status_codes: "{{ item.expected_status_codes }}"
+      image_uri_reachable: "{{ item.image_uri_reachable }}"
+      validation_error: "{{ item.validation_error }}"
+  loop: "{{ idrac_update_image_uri_validation_results }}"
+  loop_control:
+    label: "{{ item.component }}"
+  when:
+    - not (item.image_uri_reachable | bool)
+
+- name: Apply mode | Fail if firmware image URI is unreachable
+  ansible.builtin.fail:
+    msg: >-
+      Firmware image URI validation failed for {{ item.component }}.
+      Expected HTTP status {{ item.expected_status_codes }},
+      got {{ item.image_uri_status }}.
+      URI: {{ item.firmware_image_uri }}.
+      Error: {{ item.validation_error | default('none') }}.
+      Fix the path or set idrac_update_validate_image_uri=false to bypass this pre-flight check.
+  loop: "{{ idrac_update_image_uri_validation_results }}"
+  loop_control:
+    label: "{{ item.component }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - not (item.image_uri_reachable | bool)
