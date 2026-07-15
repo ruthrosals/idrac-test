@@ -1,4 +1,5 @@
 component,version,source_file,target_version,installed_version,name,transfer_protocol,allow_downgrade
 lifecycle_controller,7.00.00.184,/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE,7.00.00.184,7.00.00.184,idrac_lifecycle_controller,HTTP,false
 uefi_diagnostics,4301.74,/home/cloudadm/packages/Diagnostics_Application_R30YT_WN64_4301A73_4301.74_01.EXE,4301.74,4301A73,uefi_diagnostics,HTTP,false
+os_collector,6.0,/home/cloudadm/packages/Diagnostics_Application_0G1JH_WN64_6.0_A00_01.EXE,6.0,6.0,os_collector,HTTP,false
 os_driver_pack,24.01.04,/home/cloudadm/packages/Drivers-for-OS-Deployment_Application_NROJY_WN64_24.01.04_A00.EXE,24.01.04,<confirmed_redfish_version>,os_driver_pack,HTTP,false

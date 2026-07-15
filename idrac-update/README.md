@@ -14,11 +14,14 @@ This directory contains the iDRAC firmware update role, discovery playbook, repo
 
 The update role automates only low-risk, non-host-reboot firmware/application packages:
 
-- `idrac_lifecycle_controller`
 - `uefi_diagnostics`
+- `os_collector`
 - `os_driver_pack`
+- `idrac_lifecycle_controller`
 
 The Dell `iDRAC with Lifecycle Controller` DUP is managed as one canonical component: `idrac_lifecycle_controller`. Operators should not configure separate `idrac` and `lifecycle_controller` update items for the same DUP.
+
+Dell OS Collector is managed as a distinct canonical component: `os_collector`. It is not normalized as UEFI Diagnostics, generic diagnostics, or OS Driver Pack. OS Collector uses dotted numeric version comparison and the repository folder `os_collector`.
 
 BIOS, PERC, NIC, disk firmware, CPLD, and other availability-impacting components are out of scope. If an operator submits one of those components in apply mode, the role fails before calling `redfish_firmware`.
 
@@ -26,7 +29,7 @@ BIOS, PERC, NIC, disk firmware, CPLD, and other availability-impacting component
 
 Supported automated components are defined by `idrac_update_component_handlers` in `roles/idrac_update/defaults/main.yml`. This registry is the authoritative source for component aliases, version comparison method, inventory matching, execution order, installer type, and whether Redfish restart recovery is required.
 
-Adding a firmware package to the CSV or Semaphore variable group does not make it supported. New automated components require explicit review and a handler entry. The current automated scope remains intentionally limited to `idrac_lifecycle_controller`, `uefi_diagnostics`, and `os_driver_pack`.
+Adding a firmware package to the CSV or Semaphore variable group does not make it supported. New automated components require explicit review and a handler entry. The current automated scope remains intentionally limited to `uefi_diagnostics`, `os_collector`, `os_driver_pack`, and `idrac_lifecycle_controller`.
 
 ## Firmware Package Onboarding
 
@@ -55,6 +58,13 @@ Nginx URL: http://10.107.0.167:8090/firmware/dell/lifecycle_controller/<version>
 
 Do not use the old `idrac` repository folder for this component.
 
+For OS Collector, use its dedicated repository folder:
+
+```text
+Host path: /opt/firmware-repo/dell/os_collector/<version>/<filename>
+Nginx URL: http://10.107.0.167:8090/firmware/dell/os_collector/<version>/<filename>
+```
+
 The helper script processes every CSV row in one execution:
 
 ```bash
@@ -68,8 +78,9 @@ The helper copies approved Dell firmware packages into the Nginx firmware reposi
 Redfish firmware updates are submitted one package at a time. The role builds an effective execution order independent of the Semaphore variable order:
 
 1. `uefi_diagnostics`
-2. `os_driver_pack`
-3. `idrac_lifecycle_controller`
+2. `os_collector`
+3. `os_driver_pack`
+4. `idrac_lifecycle_controller`
 
 The `idrac_lifecycle_controller` package is intentionally last because it can restart iDRAC management services. After that package, the role waits for HTTPS, authenticated Manager JSON, and authenticated UpdateService JSON before continuing or reporting completion.
 

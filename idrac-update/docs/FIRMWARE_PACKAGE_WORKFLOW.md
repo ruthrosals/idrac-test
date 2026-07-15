@@ -12,11 +12,14 @@ Nginx remains the active firmware source for iDRAC. Wasabi is the archive and re
 
 Only low-risk, non-host-reboot firmware/application packages are automated:
 
-- `idrac_lifecycle_controller`
 - `uefi_diagnostics`
+- `os_collector`
 - `os_driver_pack`
+- `idrac_lifecycle_controller`
 
 The Dell `iDRAC with Lifecycle Controller` DUP is represented as one canonical component: `idrac_lifecycle_controller`. Do not configure separate `idrac` and `lifecycle_controller` update items for the same DUP.
+
+Dell OS Collector is represented as its own canonical component: `os_collector`. Do not place OS Collector packages under `uefi_diagnostics` or `os_driver_pack`.
 
 BIOS, PERC, NIC, disk firmware, CPLD, and other availability-impacting components remain out of scope.
 
@@ -52,6 +55,7 @@ Working example:
 component,version,source_file,target_version,installed_version,name,transfer_protocol,allow_downgrade
 lifecycle_controller,7.00.00.184,/home/cloudadm/packages/iDRAC-with-Lifecycle-Controller_Firmware_FWMWV_WN64_7.00.00.184_A00.EXE,7.00.00.184,7.00.00.184,idrac_lifecycle_controller,HTTP,false
 uefi_diagnostics,4301.74,/home/cloudadm/packages/Diagnostics_Application_R30YT_WN64_4301A73_4301.74_01.EXE,4301.74,4301A73,uefi_diagnostics,HTTP,false
+os_collector,6.0,/home/cloudadm/packages/Diagnostics_Application_0G1JH_WN64_6.0_A00_01.EXE,6.0,6.0,os_collector,HTTP,false
 os_driver_pack,24.01.04,/home/cloudadm/packages/Drivers-for-OS-Deployment_Application_NROJY_WN64_24.01.04_A00.EXE,24.01.04,<confirmed_redfish_version>,os_driver_pack,HTTP,false
 ```
 
@@ -66,6 +70,13 @@ http://10.107.0.167:8090/firmware/dell/lifecycle_controller/<version>/<filename>
 
 Do not use the old `idrac` repository folder for the iDRAC with Lifecycle Controller DUP.
 
+For OS Collector, use the dedicated `os_collector` repository folder:
+
+```text
+/opt/firmware-repo/dell/os_collector/<version>/<filename>
+http://10.107.0.167:8090/firmware/dell/os_collector/<version>/<filename>
+```
+
 Field meaning:
 
 - `component`: folder under `/opt/firmware-repo/dell/`
@@ -73,7 +84,7 @@ Field meaning:
 - `source_file`: local Dell firmware package path
 - `target_version`: Dell package or release version
 - `installed_version`: expected Redfish-reported inventory version after install
-- `name`: canonical playbook item name
+- `name`: canonical playbook item name, such as `os_collector` for Dell OS Collector packages
 - `transfer_protocol`: `HTTP` by default when empty
 - `allow_downgrade`: `true` only for an intentional downgrade; otherwise `false`
 

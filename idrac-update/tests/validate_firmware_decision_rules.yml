@@ -7,6 +7,7 @@
   vars:
     expected_execution_order:
       - uefi_diagnostics
+      - os_collector
       - os_driver_pack
       - idrac_lifecycle_controller
     normalization_cases:
@@ -26,6 +27,10 @@
         expected: uefi_diagnostics
       - input: 64 Bit UEFI Diagnostics
         expected: uefi_diagnostics
+      - input: OS Collector
+        expected: os_collector
+      - input: Dell OS Collector
+        expected: os_collector
       - input: OS Driver Pack
         expected: os_driver_pack
       - input: Dell OS Driver Pack
@@ -35,8 +40,8 @@
     decision_cases:
       - name: idrac_upgrade
         component: idrac_lifecycle_controller
-        current_version: 7.00.00.182
-        expected_installed_version: 7.00.00.184
+        current_version: "7.00.00.182"
+        expected_installed_version: "7.00.00.184"
         component_present: true
         allow_downgrade: false
         force_update: false
@@ -45,8 +50,8 @@
         expected_should_install: true
       - name: idrac_compliant
         component: idrac_lifecycle_controller
-        current_version: 7.00.00.184
-        expected_installed_version: 7.00.00.184
+        current_version: "7.00.00.184"
+        expected_installed_version: "7.00.00.184"
         component_present: true
         allow_downgrade: false
         force_update: false
@@ -55,8 +60,8 @@
         expected_should_install: false
       - name: idrac_newer_without_downgrade
         component: idrac_lifecycle_controller
-        current_version: 7.00.00.184
-        expected_installed_version: 7.00.00.182
+        current_version: "7.00.00.184"
+        expected_installed_version: "7.00.00.182"
         component_present: true
         allow_downgrade: false
         force_update: false
@@ -65,8 +70,8 @@
         expected_should_install: false
       - name: idrac_newer_with_downgrade
         component: idrac_lifecycle_controller
-        current_version: 7.00.00.184
-        expected_installed_version: 7.00.00.182
+        current_version: "7.00.00.184"
+        expected_installed_version: "7.00.00.182"
         component_present: true
         allow_downgrade: true
         force_update: false
@@ -76,7 +81,7 @@
       - name: uefi_diagnostics_upgrade_a70_to_a73
         component: uefi_diagnostics
         current_version: 4301A70
-        target_version: 4301.74
+        target_version: "4301.74"
         expected_installed_version: 4301A73
         component_present: true
         allow_downgrade: false
@@ -87,7 +92,7 @@
       - name: uefi_diagnostics_upgrade_a71_to_a73
         component: uefi_diagnostics
         current_version: 4301A71
-        target_version: 4301.74
+        target_version: "4301.74"
         expected_installed_version: 4301A73
         component_present: true
         allow_downgrade: false
@@ -118,7 +123,7 @@
       - name: uefi_diagnostics_compliant
         component: uefi_diagnostics
         current_version: 4301A73
-        target_version: 4301.74
+        target_version: "4301.74"
         expected_installed_version: 4301A73
         component_present: true
         allow_downgrade: false
@@ -129,7 +134,7 @@
       - name: uefi_diagnostics_newer_a74_to_a73
         component: uefi_diagnostics
         current_version: 4301A74
-        target_version: 4301.74
+        target_version: "4301.74"
         expected_installed_version: 4301A73
         component_present: true
         allow_downgrade: false
@@ -137,10 +142,50 @@
         expected_relation: newer
         expected_action: newer_than_target
         expected_should_install: false
+      - name: os_collector_upgrade_5_to_6
+        component: os_collector
+        current_version: "5.0"
+        expected_installed_version: "6.0"
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: older
+        expected_action: upgrade_required
+        expected_should_install: true
+      - name: os_collector_compliant
+        component: os_collector
+        current_version: "6.0"
+        expected_installed_version: "6.0"
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: equal
+        expected_action: compliant
+        expected_should_install: false
+      - name: os_collector_newer_than_target
+        component: os_collector
+        current_version: "7.0"
+        expected_installed_version: "6.0"
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: newer
+        expected_action: newer_than_target
+        expected_should_install: false
+      - name: os_collector_absent
+        component: os_collector
+        current_version: NOT_APPLICABLE
+        expected_installed_version: "6.0"
+        component_present: false
+        allow_downgrade: false
+        force_update: false
+        expected_relation: unknown
+        expected_action: not_applicable
+        expected_should_install: false
       - name: os_driver_pack_upgrade_from_191205
         component: os_driver_pack
-        current_version: 19.12.05
-        expected_installed_version: 24.01.04
+        current_version: "19.12.05"
+        expected_installed_version: "24.01.04"
         component_present: true
         allow_downgrade: false
         force_update: false
@@ -149,8 +194,8 @@
         expected_should_install: true
       - name: os_driver_pack_upgrade_from_211001
         component: os_driver_pack
-        current_version: 21.10.01
-        expected_installed_version: 24.01.04
+        current_version: "21.10.01"
+        expected_installed_version: "24.01.04"
         component_present: true
         allow_downgrade: false
         force_update: false
@@ -159,8 +204,8 @@
         expected_should_install: true
       - name: future_dotted_numeric_upgrade
         component: os_driver_pack
-        current_version: 24.01.04
-        expected_installed_version: 25.02.01
+        current_version: "24.01.04"
+        expected_installed_version: "25.02.01"
         component_present: true
         allow_downgrade: false
         force_update: false
@@ -170,7 +215,7 @@
       - name: unknown_unparseable_version
         component: idrac_lifecycle_controller
         current_version: custom-build
-        expected_installed_version: 7.00.00.184
+        expected_installed_version: "7.00.00.184"
         component_present: true
         allow_downgrade: false
         force_update: false
@@ -265,17 +310,51 @@
             | regex_replace('^_+|_+$', '')
           }}
 
+    - name: Validate OS Collector inventory mapping stays distinct
+      ansible.builtin.assert:
+        that:
+          - os_collector_inventory_alias == 'os_collector'
+          - os_collector_inventory_alias != 'uefi_diagnostics'
+          - os_collector_inventory_alias != 'os_driver_pack'
+        fail_msg: >-
+          OS Collector inventory mapping failed.
+          Expected=os_collector, actual={{ os_collector_inventory_alias }}.
+      vars:
+        inventory_component_name: OS COLLECTOR, v5.0, A00
+        inventory_component_key: >-
+          {{
+            inventory_component_name
+            | lower
+            | trim
+            | regex_replace('[^a-z0-9]+', '_')
+            | regex_replace('_+', '_')
+            | regex_replace('^_+|_+$', '')
+          }}
+        os_collector_match_key: os_collector
+        os_collector_inventory_alias: >-
+          {{
+            'os_collector'
+            if (
+              inventory_component_key == os_collector_match_key
+              or inventory_component_key is match('^' ~ os_collector_match_key ~ '_')
+            )
+            else 'unknown'
+          }}
+
     - name: Validate handler behavior metadata
       ansible.builtin.assert:
         that:
           - idrac_update_component_handlers.idrac_lifecycle_controller.restart_redfish | bool
           - not idrac_update_component_handlers.uefi_diagnostics.restart_redfish | bool
+          - not idrac_update_component_handlers.os_collector.restart_redfish | bool
           - not idrac_update_component_handlers.os_driver_pack.restart_redfish | bool
           - idrac_update_component_handlers.idrac_lifecycle_controller.installer == 'redfish'
           - idrac_update_component_handlers.uefi_diagnostics.installer == 'redfish'
+          - idrac_update_component_handlers.os_collector.installer == 'redfish'
           - idrac_update_component_handlers.os_driver_pack.installer == 'redfish'
           - idrac_update_component_handlers.idrac_lifecycle_controller.comparator == 'dotted_numeric'
           - idrac_update_component_handlers.uefi_diagnostics.comparator == 'uefi_revision'
+          - idrac_update_component_handlers.os_collector.comparator == 'dotted_numeric'
           - idrac_update_component_handlers.os_driver_pack.comparator == 'dotted_numeric'
 
     - name: Validate unknown handler values fail support checks
@@ -432,6 +511,8 @@
         that:
           - actual_execution_order == expected_execution_order
           - actual_execution_order[-1] == 'idrac_lifecycle_controller'
+          - actual_execution_order.index('os_collector') > actual_execution_order.index('uefi_diagnostics')
+          - actual_execution_order.index('os_collector') < actual_execution_order.index('os_driver_pack')
         fail_msg: >-
           Firmware execution order failed.
           Expected={{ expected_execution_order }}, actual={{ actual_execution_order }}.

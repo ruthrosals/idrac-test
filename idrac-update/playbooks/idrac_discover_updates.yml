@@ -256,6 +256,15 @@
               'idrac_with_lifecycle_controller',
               'idrac_lifecycle_controller'
             ]
+            else 'os_collector'
+            if component_key in [
+              'os_collector',
+              'dell_os_collector',
+              'os_collector_application'
+            ] or (
+              'os' in component_key
+              and 'collector' in component_key
+            )
             else 'uefi_diagnostics'
             if (
               'uefi' in component_key
@@ -301,7 +310,7 @@
           }}
       loop: "{{ current_firmware_components | default([]) }}"
       vars:
-        component_key: "{{ item.name | lower | regex_replace('\\s+', '_') }}"
+        component_key: "{{ item.canonical_name | default(item.name | lower | regex_replace('\\s+', '_')) }}"
       when: current_firmware_components is defined
 
     - name: Discovery | Get System information

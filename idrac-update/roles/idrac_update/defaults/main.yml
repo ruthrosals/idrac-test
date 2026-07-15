@@ -7,6 +7,7 @@ idrac_update_mode: "check"
 idrac_update_approved_components:
   - idrac_lifecycle_controller
   - uefi_diagnostics
+  - os_collector
   - os_driver_pack
 
 idrac_update_disallowed_components:
@@ -68,6 +69,23 @@ idrac_update_component_handlers:
       names:
         - dell 64 bit uefi diagnostics
         - 64 bit uefi diagnostics
+      primary_source: firmware_inventory
+    supports_downgrade: true
+    install_when_absent_default: false
+  os_collector:
+    aliases:
+      - os collector
+      - os_collector
+      - dell os collector
+      - os collector application
+    comparator: dotted_numeric
+    installer: redfish
+    restart_redfish: false
+    execution_order: 15
+    inventory_match:
+      names:
+        - os collector
+        - dell os collector
       primary_source: firmware_inventory
     supports_downgrade: true
     install_when_absent_default: false

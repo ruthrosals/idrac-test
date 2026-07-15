@@ -47,6 +47,11 @@ class FirmwareUriReadinessTests(unittest.TestCase):
         self.assertIn("lifecycle_controller,7.00.00.184", csv_text)
         self.assertNotIn("idrac,7.00.00.184", csv_text)
 
+    def test_examples_use_os_collector_repository_path(self) -> None:
+        csv_text = (ROOT / "examples" / "firmware_packages.csv").read_text()
+        self.assertIn("os_collector,6.0", csv_text)
+        self.assertIn("Diagnostics_Application_0G1JH_WN64_6.0_A00_01.EXE", csv_text)
+
     def test_no_active_idrac_firmware_url_paths_remain(self) -> None:
         stale_patterns = ["/firmware/dell/" + "idrac/", "/opt/firmware-repo/dell/" + "idrac"]
         scanned_suffixes = {".md", ".yml", ".yaml", ".csv", ".sh", ".py", ".json"}

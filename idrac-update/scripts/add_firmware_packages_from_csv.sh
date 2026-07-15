@@ -8,7 +8,7 @@ WASABI_ENDPOINT="https://s3.ca-central-1.wasabisys.com"
 AWS_PROFILE="wasabi"
 OUTPUT_JSON="/tmp/idrac_update_items_generated.json"
 
-ALLOWED_COMPONENTS=" idrac idrac_lifecycle_controller lifecycle_controller uefi_diagnostics os_driver_pack "
+ALLOWED_COMPONENTS=" idrac idrac_lifecycle_controller lifecycle_controller uefi_diagnostics os_collector os_driver_pack "
 
 TMP_JSON_ITEMS=""
 declare -a uploaded_objects=()
@@ -41,7 +41,7 @@ require_command() {
 validate_component() {
   local component="$1"
   if [[ "$ALLOWED_COMPONENTS" != *" $component "* ]]; then
-    echo "ERROR: Unsupported component '$component'. Allowed: idrac idrac_lifecycle_controller lifecycle_controller uefi_diagnostics os_driver_pack" >&2
+    echo "ERROR: Unsupported component '$component'. Allowed: idrac idrac_lifecycle_controller lifecycle_controller uefi_diagnostics os_collector os_driver_pack" >&2
     exit 1
   fi
 }

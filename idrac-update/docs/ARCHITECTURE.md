@@ -31,11 +31,14 @@ The update role uses `idrac_update_component_handlers` as the single registry fo
 
 The registry currently supports only:
 
-- `idrac_lifecycle_controller`
 - `uefi_diagnostics`
+- `os_collector`
 - `os_driver_pack`
+- `idrac_lifecycle_controller`
 
 Unknown components and availability-impacting firmware such as BIOS, PERC, NIC, disk firmware, and CPLD are not automatically supported. A package can exist in the firmware repository without being eligible for automated installation.
+
+OS Collector is explicitly supported as `os_collector` and remains separate from `uefi_diagnostics` and `os_driver_pack`. New diagnostic-like packages still require a reviewed handler before automation.
 
 ## Inventory And Variables
 

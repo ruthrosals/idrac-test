@@ -3,10 +3,13 @@
 This runbook covers day-to-day operation of the iDRAC update toolkit in CLI and Semaphore. The automated scope is intentionally limited to:
 
 - `uefi_diagnostics`
+- `os_collector`
 - `os_driver_pack`
 - `idrac_lifecycle_controller`
 
 BIOS, PERC, NIC, disk firmware, CPLD, and host-impacting firmware remain out of scope for this automation.
+
+OS Collector is supported as `os_collector` and uses dotted numeric version comparison, for example `5.0` to `6.0`. It is intentionally distinct from UEFI Diagnostics and OS Driver Pack.
 
 ## Tested Runtime Baseline
 
