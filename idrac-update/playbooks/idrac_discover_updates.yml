@@ -13,9 +13,10 @@
     idrac_discovery_report_enabled: true
     idrac_discovery_report_archive_enabled: false
     idrac_discovery_report_dir: "/var/tmp/idrac-update-reports/discovery"
-    idrac_discovery_report_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+    idrac_report_archive_timestamp: ""
+    idrac_discovery_report_timestamp: "{{ idrac_report_archive_timestamp }}"
     idrac_discovery_report_latest_dir: "{{ idrac_discovery_report_dir }}/latest"
-    idrac_discovery_report_archive_dir: "{{ idrac_discovery_report_dir }}/archive/{{ idrac_discovery_report_timestamp }}"
+    idrac_discovery_report_archive_dir: "{{ idrac_discovery_report_dir }}/archive/{{ idrac_report_archive_timestamp }}"
     idrac_report_upload_enabled: false
     idrac_report_upload_provider: "wasabi"
     idrac_report_bucket: ""
@@ -496,11 +497,23 @@
       run_once: true
       when: idrac_discovery_report_enabled | bool
 
-    - name: Report | Create archive discovery report directory  # noqa: run-once[task] risky-file-permissions
-      ansible.builtin.file:
-        path: "{{ idrac_discovery_report_archive_dir }}"
-        state: directory
+
+    - name: Report | Set discovery archive timestamp  # noqa: run-once[task]
+      ansible.builtin.set_fact:
+        idrac_report_archive_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
       delegate_to: localhost
+      delegate_facts: true
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_discovery_report_archive_enabled | bool
+
+    - name: Report | Set discovery archive directory  # noqa: run-once[task]
+      ansible.builtin.set_fact:
+        idrac_discovery_report_archive_dir: >-
+          {{ idrac_discovery_report_dir }}/archive/{{ hostvars.localhost.idrac_report_archive_timestamp }}
+      delegate_to: localhost
+      delegate_facts: true
       run_once: true
       when:
         - idrac_discovery_report_enabled | bool
@@ -650,10 +663,21 @@
         - hostvars[item].host_discovery is defined
         - hostvars[item].host_discovery[item] is defined
 
+    - name: Report | Create archive discovery report directory  # noqa: run-once[task] risky-file-permissions
+      ansible.builtin.file:
+        path: "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}"
+        state: directory
+        recurse: false
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - idrac_discovery_report_archive_enabled | bool
+
     - name: Report | Archive discovery summary JSON  # noqa: run-once[task]
       ansible.builtin.copy:
         src: "{{ idrac_discovery_report_latest_dir }}/idrac_discovery_summary.json"
-        dest: "{{ idrac_discovery_report_archive_dir }}/idrac_discovery_summary.json"
+        dest: "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}/idrac_discovery_summary.json"
         mode: "0644"
       delegate_to: localhost
       run_once: true
@@ -664,7 +688,7 @@
     - name: Report | Archive discovery summary CSV  # noqa: run-once[task]
       ansible.builtin.copy:
         src: "{{ idrac_discovery_report_latest_dir }}/idrac_discovery_summary.csv"
-        dest: "{{ idrac_discovery_report_archive_dir }}/idrac_discovery_summary.csv"
+        dest: "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}/idrac_discovery_summary.csv"
         mode: "0644"
       delegate_to: localhost
       run_once: true
@@ -675,7 +699,7 @@
     - name: Report | Archive per-host discovery JSON  # noqa: run-once[task]
       ansible.builtin.copy:
         src: "{{ idrac_discovery_report_latest_dir }}/{{ item }}.json"
-        dest: "{{ idrac_discovery_report_archive_dir }}/{{ item }}.json"
+        dest: "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}/{{ item }}.json"
         mode: "0644"
       loop: "{{ ansible_play_hosts_all }}"
       delegate_to: localhost
@@ -751,8 +775,8 @@
           - "{{ idrac_report_s3_cli_path }}"
           - s3
           - sync
-          - "{{ idrac_discovery_report_archive_dir }}/"
-          - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/discovery/archive/{{ idrac_discovery_report_timestamp }}/"
+          - "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}/"
+          - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/discovery/archive/{{ hostvars.localhost.idrac_report_archive_timestamp }}/"
           - --endpoint-url
           - "{{ idrac_report_s3_endpoint_url }}"
           - --profile
@@ -775,7 +799,7 @@
             - >-
               {{
                 's3://' ~ idrac_report_bucket ~ '/' ~ idrac_report_prefix ~
-                '/discovery/archive/' ~ idrac_discovery_report_timestamp ~ '/'
+                '/discovery/archive/' ~ hostvars.localhost.idrac_report_archive_timestamp ~ '/'
                 if idrac_discovery_report_archive_enabled | bool
                 else 'archive upload disabled'
               }}
