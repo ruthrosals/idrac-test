@@ -91,6 +91,15 @@ Archive directories are enabled by default and retain timestamped complete snaps
 
 The Nginx tools server may serve these under `/reports`.
 
+Report generation uses run-specific staging directories before replacing `latest`:
+
+```text
+/var/tmp/idrac-update-reports/discovery/staging/<run_id>
+/var/tmp/idrac-update-reports/updates/staging/<run_id>
+```
+
+An incomplete run does not replace `latest`. After staging validates, local `latest` is replaced as a complete snapshot from staging. When Wasabi upload is enabled, Wasabi `latest` and archive are published from the same staged files. Stale host JSON files are removed automatically when the current inventory has fewer hosts than a previous run.
+
 ## Wasabi Validation
 
 Wasabi upload is optional and disabled by default. When enabled, validate the runner has AWS CLI access:
@@ -101,7 +110,7 @@ aws s3 ls s3://<bucket> --profile wasabi --endpoint-url https://s3.ca-central-1.
 
 Reports upload under the configured `idrac_report_prefix`. Firmware packages remain served to iDRAC from Nginx, not directly from Wasabi.
 
-When report upload is enabled, `latest/` is published as a complete snapshot of the most recent successful run. Every expected object is republished, including summary JSON, summary CSV, and each current host JSON file. Stale host JSON files from older inventory runs are removed as part of latest publication.
+When report upload is enabled, Wasabi `latest/` is published as a complete snapshot of the most recent successful run from the same local staging set used for local `latest/`. Every expected object is republished, including summary JSON, summary CSV, and each current host JSON file. Stale host JSON files from older inventory runs are removed as part of latest publication.
 
 Archives are retained by completed run count. Defaults keep the newest three discovery archives and newest three update archives both locally and in Wasabi:
 

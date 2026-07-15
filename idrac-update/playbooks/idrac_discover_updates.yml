@@ -491,15 +491,6 @@
           firmware_inventory_names: "{{ current_firmware_components | map(attribute='name') | list }}"
           firmware_versions: "{{ current_firmware_versions }}"
 
-    - name: Report | Create latest discovery report directory  # noqa: run-once[task] risky-file-permissions
-      ansible.builtin.file:
-        path: "{{ idrac_discovery_report_latest_dir }}"
-        state: directory
-      delegate_to: localhost
-      run_once: true
-      when: idrac_discovery_report_enabled | bool
-
-
     - name: Report | Set discovery report run ID  # noqa: run-once[task]
       ansible.builtin.set_fact:
         idrac_report_run_id: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
@@ -508,12 +499,31 @@
       run_once: true
       when: idrac_discovery_report_enabled | bool
 
-    - name: Report | Set discovery archive directory  # noqa: run-once[task]
+    - name: Report | Set discovery publication directories  # noqa: run-once[task]
       ansible.builtin.set_fact:
+        idrac_discovery_report_staging_dir: >-
+          {{ idrac_discovery_report_dir }}/staging/{{ hostvars.localhost.idrac_report_run_id }}
         idrac_discovery_report_archive_dir: >-
           {{ idrac_discovery_report_dir }}/archive/{{ hostvars.localhost.idrac_report_run_id }}
       delegate_to: localhost
       delegate_facts: true
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Reset discovery staging directory  # noqa: run-once[task]
+      ansible.builtin.file:
+        path: "{{ hostvars.localhost.idrac_discovery_report_staging_dir }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Create discovery staging directory  # noqa: run-once[task] risky-file-permissions
+      ansible.builtin.file:
+        path: "{{ hostvars.localhost.idrac_discovery_report_staging_dir }}"
+        state: directory
+        mode: "0775"
+      delegate_to: localhost
       run_once: true
       when: idrac_discovery_report_enabled | bool
 
@@ -600,23 +610,73 @@
           discovery_error: "{{ item.0.discovery_error }}"
       when: idrac_discovery_report_enabled | bool
 
-    - name: Report | Export latest discovery summary JSON  # noqa: run-once[task]
+    - name: Report | Set expected discovery report files  # noqa: run-once[task]
+      ansible.builtin.set_fact:
+        idrac_discovery_expected_report_files: >-
+          {{
+            [
+              'idrac_discovery_summary.json',
+              'idrac_discovery_summary.csv'
+            ]
+            + (ansible_play_hosts_all | map('regex_replace', '$', '.json') | list)
+          }}
+      delegate_to: localhost
+      delegate_facts: true
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Export staged per-host discovery JSON  # noqa: run-once[task]
+      ansible.builtin.copy:
+        content: "{{ hostvars[item].host_discovery[item] | to_nice_json }}"
+        dest: "{{ hostvars.localhost.idrac_discovery_report_staging_dir }}/{{ item }}.json"
+        mode: "0644"
+        force: true
+      loop: "{{ ansible_play_hosts_all }}"
+      delegate_to: localhost
+      run_once: true
+      when:
+        - idrac_discovery_report_enabled | bool
+        - hostvars[item].host_discovery is defined
+        - hostvars[item].host_discovery[item] is defined
+
+    - name: Report | Verify staged discovery host JSON exists  # noqa: run-once[task]
+      ansible.builtin.stat:
+        path: "{{ hostvars.localhost.idrac_discovery_report_staging_dir }}/{{ item }}.json"
+      loop: "{{ ansible_play_hosts_all }}"
+      register: idrac_discovery_staged_host_file_stats
+      delegate_to: localhost
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Fail if staged discovery host JSON is incomplete  # noqa: run-once[task]
+      ansible.builtin.assert:
+        that:
+          - idrac_discovery_staged_host_file_stats.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+        fail_msg: >-
+          Discovery report staging is incomplete because one or more current-run host JSON files are missing.
+      delegate_to: localhost
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Export staged discovery summary JSON  # noqa: run-once[task]
       ansible.builtin.copy:
         content: >-
           {{
             {
               'generated_at': now(utc=true).isoformat(),
+              'run_id': hostvars.localhost.idrac_report_run_id,
               'hosts': hostvars.localhost.idrac_discovery_summary_hosts | default([])
             }
             | to_nice_json
           }}
-        dest: "{{ idrac_discovery_report_latest_dir }}/idrac_discovery_summary.json"
+        dest: "{{ hostvars.localhost.idrac_discovery_report_staging_dir }}/idrac_discovery_summary.json"
         mode: "0644"
+        force: true
       delegate_to: localhost
       run_once: true
       when: idrac_discovery_report_enabled | bool
 
-    - name: Report | Export latest discovery summary CSV  # noqa: run-once[task]
+    - name: Report | Export staged discovery summary CSV  # noqa: run-once[task]
       ansible.builtin.copy:
         content: |
           inventory_hostname,idrac_ip,model,service_tag,current_idrac_firmware_version,component_name,canonical_name,redfish_name,id,software_id,current_version,available_version,reboot_required,source_catalog,discovery_status,discovery_error
@@ -642,113 +702,99 @@
             ] | map('to_json') | join(',')
           }}
           {% endfor %}
-        dest: "{{ idrac_discovery_report_latest_dir }}/idrac_discovery_summary.csv"
+        dest: "{{ hostvars.localhost.idrac_discovery_report_staging_dir }}/idrac_discovery_summary.csv"
         mode: "0644"
+        force: true
       delegate_to: localhost
       run_once: true
       when: idrac_discovery_report_enabled | bool
 
-    - name: Report | Export latest per-host discovery JSON  # noqa: run-once[task]
-      ansible.builtin.copy:
-        content: "{{ hostvars[item].host_discovery[item] | to_nice_json }}"
-        dest: "{{ idrac_discovery_report_latest_dir }}/{{ item }}.json"
-        mode: "0644"
-      loop: "{{ ansible_play_hosts_all }}"
+    - name: Report | Find staged discovery report files  # noqa: run-once[task]
+      ansible.builtin.find:
+        paths: "{{ hostvars.localhost.idrac_discovery_report_staging_dir }}"
+        file_type: file
+        recurse: false
+      register: idrac_discovery_staged_report_files
+      delegate_to: localhost
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Validate complete staged discovery report set  # noqa: run-once[task]
+      ansible.builtin.assert:
+        that:
+          - >-
+            idrac_discovery_staged_report_files.files
+            | map(attribute='path')
+            | map('basename')
+            | sort
+            | list
+            == hostvars.localhost.idrac_discovery_expected_report_files | sort
+        fail_msg: >-
+          Discovery report staging does not exactly match the expected current-run report file set.
+      delegate_to: localhost
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Publish local discovery latest snapshot  # noqa: run-once[task]
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/../scripts/publish_report_snapshot.py"
+          - --report-type
+          - discovery
+          - --report-s3-path
+          - discovery
+          - --run-id
+          - "{{ hostvars.localhost.idrac_report_run_id }}"
+          - --local-staging-dir
+          - "{{ hostvars.localhost.idrac_discovery_report_staging_dir }}"
+          - --local-latest-dir
+          - "{{ idrac_discovery_report_latest_dir }}"
+          - --local-archive-dir
+          - "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}"
+          - --retention
+          - "{{ idrac_discovery_report_archive_retention | string }}"
+          - --bucket
+          - "{{ idrac_report_bucket }}"
+          - --prefix
+          - "{{ idrac_report_prefix }}"
+          - --endpoint-url
+          - "{{ idrac_report_s3_endpoint_url }}"
+          - --profile
+          - "{{ idrac_report_s3_profile }}"
+          - --aws-cli
+          - "{{ idrac_report_s3_cli_path }}"
+          - --expected-files-json
+          - "{{ hostvars.localhost.idrac_discovery_expected_report_files | to_json }}"
+          - --upload-enabled
+          - "false"
+          - --archive-enabled
+          - "{{ idrac_discovery_report_archive_enabled | bool | ternary('true', 'false') }}"
+      register: idrac_discovery_local_report_publish
+      changed_when: idrac_discovery_local_report_publish.rc == 0
       delegate_to: localhost
       run_once: true
       when:
         - idrac_discovery_report_enabled | bool
-        - hostvars[item].host_discovery is defined
-        - hostvars[item].host_discovery[item] is defined
+        - not (idrac_report_upload_enabled | bool)
 
-    - name: Report | Set expected discovery report files  # noqa: run-once[task]
+    - name: Report | Store local discovery publication result  # noqa: run-once[task]
       ansible.builtin.set_fact:
-        idrac_discovery_expected_report_files: >-
-          {{
-            [
-              'idrac_discovery_summary.json',
-              'idrac_discovery_summary.csv'
-            ]
-            + (ansible_play_hosts_all | map('regex_replace', '$', '.json') | list)
-          }}
+        idrac_discovery_report_publish_result: "{{ idrac_discovery_local_report_publish.stdout | from_json }}"
       delegate_to: localhost
       delegate_facts: true
       run_once: true
-      when: idrac_discovery_report_enabled | bool
-
-    - name: Report | Verify complete local discovery report set  # noqa: run-once[task]
-      ansible.builtin.stat:
-        path: "{{ idrac_discovery_report_latest_dir }}/{{ item }}"
-      loop: "{{ hostvars.localhost.idrac_discovery_expected_report_files }}"
-      register: idrac_discovery_expected_report_file_stats
-      delegate_to: localhost
-      run_once: true
-      when: idrac_discovery_report_enabled | bool
-
-    - name: Report | Fail if local discovery report set is incomplete  # noqa: run-once[task]
-      ansible.builtin.assert:
-        that:
-          - idrac_discovery_expected_report_file_stats.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
-        fail_msg: >-
-          Discovery report publication aborted because one or more expected local report files are missing.
-      delegate_to: localhost
-      run_once: true
-      when: idrac_discovery_report_enabled | bool
-
-    - name: Report | Create archive discovery report directory  # noqa: run-once[task] risky-file-permissions
-      ansible.builtin.file:
-        path: "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}"
-        state: directory
-        recurse: false
-      delegate_to: localhost
-      run_once: true
       when:
         - idrac_discovery_report_enabled | bool
-        - idrac_discovery_report_archive_enabled | bool
-
-    - name: Report | Archive discovery summary JSON  # noqa: run-once[task]
-      ansible.builtin.copy:
-        src: "{{ idrac_discovery_report_latest_dir }}/idrac_discovery_summary.json"
-        dest: "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}/idrac_discovery_summary.json"
-        mode: "0644"
-      delegate_to: localhost
-      run_once: true
-      when:
-        - idrac_discovery_report_enabled | bool
-        - idrac_discovery_report_archive_enabled | bool
-
-    - name: Report | Archive discovery summary CSV  # noqa: run-once[task]
-      ansible.builtin.copy:
-        src: "{{ idrac_discovery_report_latest_dir }}/idrac_discovery_summary.csv"
-        dest: "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}/idrac_discovery_summary.csv"
-        mode: "0644"
-      delegate_to: localhost
-      run_once: true
-      when:
-        - idrac_discovery_report_enabled | bool
-        - idrac_discovery_report_archive_enabled | bool
-
-    - name: Report | Archive per-host discovery JSON  # noqa: run-once[task]
-      ansible.builtin.copy:
-        src: "{{ idrac_discovery_report_latest_dir }}/{{ item }}.json"
-        dest: "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}/{{ item }}.json"
-        mode: "0644"
-      loop: "{{ ansible_play_hosts_all }}"
-      delegate_to: localhost
-      run_once: true
-      when:
-        - idrac_discovery_report_enabled | bool
-        - idrac_discovery_report_archive_enabled | bool
-        - hostvars[item].host_discovery is defined
-        - hostvars[item].host_discovery[item] is defined
+        - not (idrac_report_upload_enabled | bool)
 
     - name: Report | Show discovery report location  # noqa: run-once[task]
       ansible.builtin.debug:
-        msg: |
-          Discovery reports written to:
-          {{ idrac_discovery_report_latest_dir }}
+        msg: "{{ hostvars.localhost.idrac_discovery_report_publish_result | default({'local_latest_path': idrac_discovery_report_latest_dir}) }}"
       run_once: true
-      when: idrac_discovery_report_enabled | bool
+      when:
+        - idrac_discovery_report_enabled | bool
+        - not (idrac_report_upload_enabled | bool)
 
     - name: Report upload | Validate Wasabi upload settings  # noqa: run-once[task]
       ansible.builtin.assert:
@@ -791,6 +837,8 @@
           - discovery
           - --run-id
           - "{{ hostvars.localhost.idrac_report_run_id }}"
+          - --local-staging-dir
+          - "{{ hostvars.localhost.idrac_discovery_report_staging_dir }}"
           - --local-latest-dir
           - "{{ idrac_discovery_report_latest_dir }}"
           - --local-archive-dir
@@ -809,6 +857,8 @@
           - "{{ idrac_report_s3_cli_path }}"
           - --expected-files-json
           - "{{ hostvars.localhost.idrac_discovery_expected_report_files | to_json }}"
+          - --upload-enabled
+          - "true"
           - --archive-enabled
           - "{{ idrac_discovery_report_archive_enabled | bool | ternary('true', 'false') }}"
       register: idrac_discovery_report_publish

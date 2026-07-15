@@ -1,4 +1,57 @@
 ---
+- name: Report publication | Publish local update latest snapshot  # noqa: run-once[task]
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/../../scripts/publish_report_snapshot.py"
+      - --report-type
+      - idrac-update
+      - --report-s3-path
+      - idrac-update
+      - --run-id
+      - "{{ hostvars.localhost.idrac_report_run_id }}"
+      - --local-staging-dir
+      - "{{ hostvars.localhost.idrac_update_report_staging_dir }}"
+      - --local-latest-dir
+      - "{{ idrac_update_report_latest_dir }}"
+      - --local-archive-dir
+      - "{{ hostvars.localhost.idrac_update_report_archive_dir }}"
+      - --retention
+      - "{{ idrac_update_report_archive_retention | string }}"
+      - --bucket
+      - "{{ idrac_report_bucket }}"
+      - --prefix
+      - "{{ idrac_report_prefix }}"
+      - --endpoint-url
+      - "{{ idrac_report_s3_endpoint_url }}"
+      - --profile
+      - "{{ idrac_report_s3_profile }}"
+      - --aws-cli
+      - "{{ idrac_report_s3_cli_path }}"
+      - --expected-files-json
+      - "{{ hostvars.localhost.idrac_update_expected_report_files | to_json }}"
+      - --upload-enabled
+      - "false"
+      - --archive-enabled
+      - "{{ idrac_update_report_archive_enabled | bool | ternary('true', 'false') }}"
+  register: idrac_update_local_report_publish
+  changed_when: idrac_update_local_report_publish.rc == 0
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - not (idrac_report_upload_enabled | bool)
+
+- name: Report publication | Store local update publication result  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_report_publish_result: "{{ idrac_update_local_report_publish.stdout | from_json }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - not (idrac_report_upload_enabled | bool)
+
 - name: Report upload | Validate Wasabi upload settings  # noqa: run-once[task]
   ansible.builtin.assert:
     that:
@@ -40,6 +93,8 @@
       - idrac-update
       - --run-id
       - "{{ hostvars.localhost.idrac_report_run_id }}"
+      - --local-staging-dir
+      - "{{ hostvars.localhost.idrac_update_report_staging_dir }}"
       - --local-latest-dir
       - "{{ idrac_update_report_latest_dir }}"
       - --local-archive-dir
@@ -58,6 +113,8 @@
       - "{{ idrac_report_s3_cli_path }}"
       - --expected-files-json
       - "{{ hostvars.localhost.idrac_update_expected_report_files | to_json }}"
+      - --upload-enabled
+      - "true"
       - --archive-enabled
       - "{{ idrac_update_report_archive_enabled | bool | ternary('true', 'false') }}"
   register: idrac_update_report_publish
@@ -78,10 +135,8 @@
     - idrac_update_report_enabled | bool
     - idrac_report_upload_enabled | bool
 
-- name: Report upload | Show update report publication result  # noqa: run-once[task]
+- name: Report publication | Show update report publication result  # noqa: run-once[task]
   ansible.builtin.debug:
     msg: "{{ hostvars.localhost.idrac_update_report_publish_result }}"
   run_once: true
-  when:
-    - idrac_update_report_enabled | bool
-    - idrac_report_upload_enabled | bool
+  when: idrac_update_report_enabled | bool

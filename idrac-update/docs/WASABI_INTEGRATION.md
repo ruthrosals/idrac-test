@@ -37,7 +37,7 @@ Reports are written to:
     └── archive/
 ```
 
-The `latest/` directories represent the most recent completed run. During Wasabi publication, every expected latest object is republished from a validated staging snapshot so object timestamps reflect one complete report generation. Archive output is enabled by default and stores timestamped complete snapshots.
+The `latest/` directories represent the most recent completed run. Reports are first generated in a run-specific local staging directory, then local `latest/` and Wasabi `latest/` are both published from that same validated staged set. Every expected latest object is rewritten during publication so local filesystem times and S3 Last Modified values reflect one complete report generation. Archive output is enabled by default and stores timestamped complete snapshots.
 
 ## Wasabi Report Upload
 
@@ -88,7 +88,7 @@ idrac_report_s3_profile: "wasabi"
 
 Report publication uses one run ID per playbook execution in `YYYYMMDD-HHMMSS` format. The same run ID is used for the local archive directory, Wasabi archive prefix, publication logs, and retention processing.
 
-Before upload, the playbook verifies that the local report set is complete. Discovery reports require:
+Before publication, the playbook writes reports under `staging/<run_id>/` and verifies that the staged report set is complete. Discovery reports require:
 
 ```text
 idrac_discovery_summary.json
@@ -104,7 +104,7 @@ idrac_update_summary.csv
 <inventory_hostname>.json for every host in the run
 ```
 
-The `latest/` prefix is a full snapshot, not an incremental sync target. The publication helper uploads the current files to a staging prefix, verifies the staging object set, clears `latest/`, copies every expected object into `latest/`, verifies the final object set, then removes staging. This prevents stale host JSON files from remaining after inventory size changes.
+Local `latest/` and Wasabi `latest/` are full snapshots, not incremental sync targets. The publication helper validates the local staging directory, replaces local `latest/` from staging, uploads the same files to a Wasabi staging prefix, verifies that staging object set, clears Wasabi `latest/`, copies every expected object into Wasabi `latest/`, verifies the final object set, then removes staging after successful publication. This prevents stale host JSON files from remaining after inventory size changes. If publication fails, the run-specific local staging directory is preserved for troubleshooting.
 
 Archive retention is count-based and keeps completed timestamp prefixes, not individual files. Defaults:
 
