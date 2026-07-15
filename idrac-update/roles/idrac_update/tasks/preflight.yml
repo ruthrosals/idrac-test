@@ -1,0 +1,154 @@
+---
+- name: Pre-flight | Report credential variable status
+  ansible.builtin.debug:
+    msg:
+      username_set: "{{ idrac_update_user | length > 0 }}"
+      username_length: "{{ idrac_update_user | length }}"
+      password_set: "{{ idrac_update_password | length > 0 }}"
+      password_length: "{{ idrac_update_password | length }}"
+  when: ansible_verbosity >= 1
+
+- name: Pre-flight | Check iDRAC Redfish is reachable
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: [200, 401, 403]
+    timeout: 30
+  register: idrac_update_reachable
+  no_log: true
+  failed_when: false
+
+- name: Pre-flight | Report iDRAC connectivity issue
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      idrac_ip: "{{ idrac_ip }}"
+      idrac_port: "{{ idrac_update_port }}"
+      status: "{{ idrac_update_reachable.status | default('no response') }}"
+      reason: >-
+        {% if idrac_update_reachable.status | default(0) == 401 %}
+        Authentication failed. Verify IDRAC_USERNAME and IDRAC_PASSWORD.
+        {% elif idrac_update_reachable.status | default(0) == 403 %}
+        Access forbidden. Verify the iDRAC user has firmware update privileges.
+        {% else %}
+        Connection failed. Verify iDRAC IP, port, certificate setting, and network reachability.
+        {% endif %}
+      error: "{{ idrac_update_reachable.msg | default('unknown') }}"
+  when: idrac_update_reachable.status is not defined or idrac_update_reachable.status != 200
+
+- name: Pre-flight | Fail if iDRAC Redfish is unreachable
+  ansible.builtin.fail:
+    msg: >-
+      Failed to connect or authenticate to iDRAC Redfish on {{ inventory_hostname }}
+      at https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1.
+      HTTP status={{ idrac_update_reachable.status | default('no response') }}.
+  when: idrac_update_reachable.status is not defined or idrac_update_reachable.status != 200
+
+- name: Pre-flight | Capture host power state
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Systems/System.Embedded.1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: [200, 401, 403, 404]
+    timeout: 30
+  register: idrac_update_system
+  no_log: true
+  failed_when: false
+
+- name: Pre-flight | Report system endpoint issue
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      endpoint: "/redfish/v1/Systems/System.Embedded.1"
+      status: "{{ idrac_update_system.status | default('no response') }}"
+      reason: >-
+        {% if idrac_update_system.status | default(0) == 401 %}
+        Authentication failed while querying system inventory.
+        {% elif idrac_update_system.status | default(0) == 403 %}
+        Access forbidden while querying system inventory.
+        {% elif idrac_update_system.status | default(0) == 404 %}
+        System.Embedded.1 was not found. This iDRAC may expose a different Systems member URI.
+        {% else %}
+        Failed to query system inventory.
+        {% endif %}
+      error: "{{ idrac_update_system.msg | default('unknown') }}"
+  when: idrac_update_system.status is not defined or idrac_update_system.status != 200
+
+- name: Pre-flight | Fail if system endpoint is unavailable
+  ansible.builtin.fail:
+    msg: >-
+      Failed to query host power state on {{ inventory_hostname }} from
+      https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Systems/System.Embedded.1.
+      HTTP status={{ idrac_update_system.status | default('no response') }}.
+  when: idrac_update_system.status is not defined or idrac_update_system.status != 200
+
+- name: Pre-flight | Capture update health baseline timestamp
+  ansible.builtin.set_fact:
+    idrac_update_health_baseline_time: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%S') }}"
+
+- name: Pre-flight | Capture SEL before update
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1/LogServices/Sel/Entries"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_sel_before
+  failed_when: false
+  no_log: true
+
+- name: Pre-flight | Get iDRAC manager information
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_manager
+  no_log: true
+
+- name: Pre-flight | Capture current iDRAC state
+  ansible.builtin.set_fact:
+    idrac_update_current_version: "{{ idrac_update_manager.json.FirmwareVersion | default('UNKNOWN') }}"
+    idrac_update_power_state_before: "{{ idrac_update_system.json.PowerState | default('UNKNOWN') }}"
+    idrac_update_sel_critical_entries_before: >-
+      {{
+        idrac_update_sel_before.json.Members | default([])
+        | selectattr('Severity', 'defined')
+        | selectattr('Severity', 'equalto', 'Critical')
+        | list
+      }}
+    idrac_update_sel_critical_count_before: >-
+      {{
+        idrac_update_sel_before.json.Members | default([])
+        | selectattr('Severity', 'defined')
+        | selectattr('Severity', 'equalto', 'Critical')
+        | list
+        | length
+      }}
+
+- name: Pre-flight | Build critical SEL signature list
+  ansible.builtin.set_fact:
+    idrac_update_sel_critical_signatures_before: "{{ idrac_update_sel_critical_signatures_before | default([]) + [idrac_update_sel_entry_signature] }}"
+  loop: "{{ idrac_update_sel_critical_entries_before }}"
+  loop_control:
+    label: "{{ item.Id | default(item.Created | default('unknown')) }}"
+  vars:
+    idrac_update_sel_entry_signature: >-
+      {{
+        (item.Id | default(item['@odata.id'] | default('unknown'))) ~ '|' ~
+        (item.Created | default('')) ~ '|' ~
+        (item.Message | default(item.Name | default('')))
+      }}

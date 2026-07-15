@@ -1,0 +1,109 @@
+---
+- name: Pre-flight | Build firmware install plan
+  ansible.builtin.set_fact:
+    idrac_update_install_plan: "{{ idrac_update_install_plan + [item] }}"
+  loop: "{{ idrac_update_compliance }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Pre-flight | Validate install plan approval consistency
+  ansible.builtin.assert:
+    that:
+      - item.approved == (item.normalized_name in idrac_update_approved_component_set)
+    fail_msg: >-
+      Install plan approval mismatch.
+      normalized_name={{ item.normalized_name }}
+      approved={{ item.approved }}
+      approved_component_set={{ idrac_update_approved_component_set }}
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.normalized_name }}"
+
+
+- name: Pre-flight | Validate firmware decision outcomes
+  ansible.builtin.assert:
+    that:
+      - item.action != 'upgrade_required' or item.should_install | bool
+      - item.action != 'compliant' or not item.should_install | bool
+      - item.action != 'not_applicable' or not item.should_install | bool
+      - item.action != 'newer_than_target' or not item.allow_downgrade | bool
+      - item.action != 'newer_than_target' or not item.should_install | bool
+      - item.action != 'downgrade_required' or item.allow_downgrade | bool
+      - >-
+        idrac_update_mode != 'apply'
+        or not item.approved | bool
+        or item.excluded | bool
+        or item.applicability != 'applicable'
+        or (item.version_relation | trim) != 'unknown'
+        or item.force_update | bool
+    fail_msg: >-
+      Invalid firmware decision outcome for {{ item.name }} on {{ inventory_hostname }}.
+      action={{ item.action }} should_install={{ item.should_install }}
+      version_relation={{ item.version_relation }} allow_downgrade={{ item.allow_downgrade }}
+      comparison_reason={{ item.comparison_reason }}.
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.normalized_name }}"
+
+
+- name: Apply mode | Fail if requested component is outside non-disruptive scope
+  ansible.builtin.fail:
+    msg: >-
+      Component '{{ item.name }}' is outside the approved non-disruptive firmware scope.
+      Canonical component={{ item.name_normalized }}.
+  loop: "{{ idrac_update_items_normalized }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - item.name_normalized in idrac_update_disallowed_component_set
+
+
+- name: Apply mode | Show firmware install plan
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      idrac_ip: "{{ idrac_ip }}"
+      install_plan: "{{ idrac_update_install_plan }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - not idrac_update_no_log | bool
+
+- name: Apply mode | Fail if approved firmware current version is unknown
+  ansible.builtin.fail:
+    msg: >-
+      Cannot make firmware update decision for {{ inventory_hostname }}
+      component={{ item.name }} because current_version is UNKNOWN.
+      Version map={{ idrac_update_firmware_versions }}.
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - item.approved | bool
+    - not item.excluded | bool
+    - item.action == 'unknown'
+
+- name: Pre-flight | Build firmware discovery display list
+  ansible.builtin.set_fact:
+    idrac_update_firmware_discovery_names: "{{ idrac_update_firmware_discovery_names | default([]) + [firmware_name] }}"
+  loop: "{{ idrac_update_firmware_inventory }}"
+  vars:
+    firmware_name: "{{ item.name | default(item.Name | default(item.Id | default('unknown'))) }}"
+
+- name: Pre-flight | Firmware discovery and compliance report
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      mode: "{{ idrac_update_mode }}"
+      power_state_before: "{{ idrac_update_power_state_before }}"
+      sel_critical_before: "{{ idrac_update_sel_critical_count_before }}"
+      discovery: "{{ idrac_update_firmware_discovery_names | default([]) }}"
+      compliance: "{{ idrac_update_compliance_report }}"
+
+- name: Check mode | Report only
+  ansible.builtin.debug:
+    msg: >-
+      CHECK ONLY: {{ inventory_hostname }}
+      compliance={{ idrac_update_compliance_report }}
+  when: idrac_update_mode == 'check'

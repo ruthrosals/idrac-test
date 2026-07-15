@@ -1,0 +1,164 @@
+---
+- name: Apply mode | Report firmware components selected for install
+  ansible.builtin.debug:
+    msg: >-
+      APPLY PLAN: {{ inventory_hostname }} component={{ item.name }}
+      current={{ item.current_version }}
+      target={{ item.target_version }}
+      expected_installed={{ item.expected_installed_version }}
+      approved={{ item.approved }}
+      excluded={{ item.excluded }}
+      applicability={{ item.applicability }}
+      action={{ item.action }}
+      allow_downgrade={{ item.allow_downgrade }}
+      drift={{ item.drift }}
+      should_install={{ item.should_install }}
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: idrac_update_mode == 'apply'
+
+- name: Apply mode | Determine expected iDRAC final version
+  ansible.builtin.set_fact:
+    idrac_update_idrac_expected_version: "{{ item.expected_installed_version }}"
+    idrac_update_idrac_update_expected: true
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - item.handler_restart_redfish | bool
+    - item.should_install | bool
+
+- name: Pre-flight | Check firmware image URI
+  ansible.builtin.uri:
+    url: "{{ item.firmware_image_uri }}"
+    method: HEAD
+    follow_redirects: all
+    status_code: "{{ idrac_update_image_uri_status_codes }}"
+    timeout: "{{ idrac_update_image_uri_timeout }}"
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: idrac_update_image_uri_checks
+  failed_when: false
+  when:
+    - idrac_update_validate_image_uri | bool
+    - item.approved | bool
+    - not item.excluded | bool
+    - item.firmware_image_uri is defined
+    - >-
+      idrac_update_mode == 'check'
+      or item.should_install | bool
+
+- name: Pre-flight | Warn about unreachable firmware image URI
+  ansible.builtin.debug:
+    msg:
+      warning: "Firmware image URI is not reachable from the Ansible control node"
+      mode: "{{ idrac_update_mode }}"
+      component: "{{ item.item.name }}"
+      target_version: "{{ item.item.target_version }}"
+      firmware_image_uri: "{{ item.item.firmware_image_uri }}"
+      expected_status_codes: "{{ idrac_update_image_uri_status_codes }}"
+      status: "{{ item.status | default('no response') }}"
+      error: "{{ item.msg | default('unknown') }}"
+  loop: "{{ idrac_update_image_uri_checks.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('unknown') }}"
+  when:
+    - not item.skipped | default(false)
+    - item.status | default(0) not in idrac_update_image_uri_status_codes
+
+- name: Pre-flight | Fail if firmware image URI is unreachable
+  ansible.builtin.fail:
+    msg: >-
+      Firmware image URI validation failed for {{ item.item.name }}.
+      Expected HTTP status {{ idrac_update_image_uri_status_codes }},
+      got {{ item.status | default('no response') }}.
+      URI: {{ item.item.firmware_image_uri }}.
+      Fix the path or set idrac_update_validate_image_uri=false to bypass this pre-flight check.
+  loop: "{{ idrac_update_image_uri_checks.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('unknown') }}"
+  when:
+    - not item.skipped | default(false)
+    - item.status | default(0) not in idrac_update_image_uri_status_codes
+
+- name: Apply mode | Build ordered firmware execution plan
+  ansible.builtin.set_fact:
+    idrac_update_ordered_install_plan: >-
+      {{
+        idrac_update_install_plan
+        | selectattr('should_install', 'equalto', true)
+        | sort(attribute='handler_execution_order')
+        | list
+      }}
+  when: idrac_update_mode == 'apply'
+
+- name: Apply mode | Show effective firmware execution order
+  ansible.builtin.debug:
+    msg:
+      heading: "Effective firmware execution order"
+      execution_order: "{{ idrac_update_ordered_install_plan | map(attribute='normalized_name') | list }}"
+  when: idrac_update_mode == 'apply'
+
+- name: Apply mode | Apply firmware items sequentially
+  ansible.builtin.include_tasks: apply_item.yml
+  loop: "{{ idrac_update_ordered_install_plan | default([]) }}"
+  loop_control:
+    loop_var: firmware_item
+    label: "{{ firmware_item.name }}"
+  when: idrac_update_mode == 'apply'
+
+- name: Apply mode | Build skipped install result entries
+  ansible.builtin.set_fact:
+    idrac_update_install_results: "{{ idrac_update_install_results + [idrac_update_install_result_item] }}"
+  loop: "{{ idrac_update_install_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    idrac_update_install_result_item:
+      host: "{{ inventory_hostname }}"
+      component: "{{ item.normalized_name }}"
+      name: "{{ item.name }}"
+      normalized_name: "{{ item.normalized_name }}"
+      handler_comparator: "{{ item.handler_comparator }}"
+      handler_installer: "{{ item.handler_installer }}"
+      handler_restart_redfish: "{{ item.handler_restart_redfish }}"
+      handler_execution_order: "{{ item.handler_execution_order }}"
+      inventory_source: "{{ item.inventory_source }}"
+      submitted: false
+      job_id: ""
+      module_changed: false
+      before_version: "{{ item.current_version }}"
+      expected_installed_version: "{{ item.expected_installed_version }}"
+      expected_version: "{{ item.expected_installed_version }}"
+      final_version: "{{ item.current_version }}"
+      redfish_recovered: false
+      verification_passed: false
+      attempts: 0
+      status: "{{ item.action }}"
+      error: "{{ item.skip_reason }}"
+      action: "{{ item.action }}"
+      applicability: "{{ item.applicability }}"
+      allow_downgrade: "{{ item.allow_downgrade }}"
+      redfish_task_id: ""
+      changed: false
+      skipped: true
+      reason: "{{ item.skip_reason }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - not item.should_install | bool
+
+- name: Apply mode | Report skipped firmware components
+  ansible.builtin.debug:
+    msg: >-
+      SKIPPED: {{ inventory_hostname }} component={{ item.name }}
+      current={{ item.current_version }}
+      target={{ item.target_version }}
+      expected_installed={{ item.expected_installed_version }}
+      reason={{ item.skip_reason }}
+  loop: "{{ idrac_update_install_plan }}"
+  when:
+    - idrac_update_mode == 'apply'
+    - not item.should_install | bool

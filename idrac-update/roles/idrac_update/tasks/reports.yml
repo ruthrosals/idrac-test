@@ -1,0 +1,235 @@
+---
+- name: Final report
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      mode: "{{ idrac_update_mode }}"
+      power_state_before: "{{ idrac_update_power_state_before }}"
+      sel_critical_before: "{{ idrac_update_sel_critical_count_before }}"
+      sel_critical_after: "{{ idrac_update_sel_critical_count_after | default('not_checked') }}"
+      compliance: "{{ idrac_update_compliance_report }}"
+      final_versions: "{{ idrac_update_firmware_versions_after | default(idrac_update_firmware_versions | default({})) }}"
+      firmware_verification: "{{ idrac_update_final_report }}"
+
+- name: Final execution summary
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      sel_critical_delta: >-
+        {{
+          (idrac_update_sel_critical_count_after | default(idrac_update_sel_critical_count_before) | int)
+          - (idrac_update_sel_critical_count_before | int)
+        }}
+      report_upload_result: >-
+        {{
+          'enabled'
+          if idrac_report_upload_enabled | default(false) | bool
+          else 'not_enabled'
+        }}
+      components: >-
+        {{
+          idrac_update_final_report
+          | map(attribute='component')
+          | list
+        }}
+      summary: "{{ idrac_update_final_report }}"
+
+- name: Report | Build update report entry
+  ansible.builtin.set_fact:
+    idrac_update_report_entry:
+      inventory_hostname: "{{ inventory_hostname }}"
+      idrac_ip: "{{ idrac_ip }}"
+      mode: "{{ idrac_update_mode }}"
+      power_state_before: "{{ idrac_update_power_state_before }}"
+      sel_critical_before: "{{ idrac_update_sel_critical_count_before }}"
+      sel_critical_after: "{{ idrac_update_sel_critical_count_after | default('not_checked') }}"
+      compliance: "{{ idrac_update_compliance_report }}"
+      final_versions: "{{ idrac_update_firmware_versions_after | default(idrac_update_firmware_versions | default({})) }}"
+      firmware_verification: "{{ idrac_update_final_report }}"
+      install_results: "{{ idrac_update_install_results | default([]) }}"
+      report_status: "complete"
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Create latest update report directory  # noqa: run-once[task] risky-file-permissions
+  ansible.builtin.file:
+    path: "{{ idrac_update_report_latest_dir }}"
+    state: directory
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Create archive update report directory  # noqa: run-once[task] risky-file-permissions
+  ansible.builtin.file:
+    path: "{{ idrac_update_report_archive_dir }}"
+    state: directory
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+
+- name: Report | Reset consolidated update report data  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_summary_hosts: []
+    idrac_update_csv_rows: []
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Build consolidated update report data  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_summary_hosts: "{{ idrac_update_summary_hosts | default([]) + [hostvars[item].idrac_update_report_entry] }}"
+  loop: "{{ ansible_play_hosts_all }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - hostvars[item].idrac_update_report_entry is defined
+
+- name: Report | Build update CSV rows  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_csv_rows: "{{ idrac_update_csv_rows | default([]) + [idrac_update_csv_row] }}"
+  loop: "{{ hostvars.localhost.idrac_update_summary_hosts | default([]) | subelements('firmware_verification', skip_missing=true) }}"
+  loop_control:
+    label: "{{ item.0.inventory_hostname }} {{ item.1.name }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  vars:
+    idrac_update_csv_row:
+      inventory_hostname: "{{ item.0.inventory_hostname }}"
+      idrac_ip: "{{ item.0.idrac_ip }}"
+      mode: "{{ item.0.mode }}"
+      component: "{{ item.1.component }}"
+      component_name: "{{ item.1.name }}"
+      current_version: "{{ item.1.current_version }}"
+      target_version: "{{ item.1.target_version }}"
+      expected_installed_version: "{{ item.1.expected_installed_version }}"
+      handler_comparator: "{{ item.1.handler_comparator }}"
+      handler_installer: "{{ item.1.handler_installer }}"
+      handler_restart_redfish: "{{ item.1.handler_restart_redfish }}"
+      handler_execution_order: "{{ item.1.handler_execution_order }}"
+      inventory_source: "{{ item.1.inventory_source }}"
+      applicability: "{{ item.1.applicability }}"
+      approved: "{{ item.1.approved }}"
+      excluded: "{{ item.1.excluded }}"
+      allow_downgrade: "{{ item.1.allow_downgrade }}"
+      action: "{{ item.1.action }}"
+      final_version: "{{ item.1.final_version }}"
+      changed: "{{ item.1.changed }}"
+      skipped: "{{ item.1.skipped }}"
+      verification_status: "{{ item.1.verification_status }}"
+      verification_passed: "{{ item.1.verification_passed }}"
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Export latest update summary JSON  # noqa: run-once[task]
+  ansible.builtin.copy:
+    content: >-
+      {{
+        {
+          'generated_at': now(utc=true).isoformat(),
+          'hosts': hostvars.localhost.idrac_update_summary_hosts | default([])
+        }
+        | to_nice_json
+      }}
+    dest: "{{ idrac_update_report_latest_dir }}/idrac_update_summary.json"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Export latest update summary CSV  # noqa: run-once[task]
+  ansible.builtin.copy:
+    content: |
+      inventory_hostname,idrac_ip,mode,component,component_name,current_version,target_version,expected_installed_version,handler_comparator,handler_installer,handler_restart_redfish,handler_execution_order,inventory_source,applicability,approved,excluded,allow_downgrade,action,final_version,changed,skipped,verification_status,verification_passed
+      {% for row in hostvars.localhost.idrac_update_csv_rows | default([]) %}
+      {{
+        [
+          row.inventory_hostname,
+          row.idrac_ip,
+          row.mode,
+          row.component,
+          row.component_name,
+          row.current_version,
+          row.target_version,
+          row.expected_installed_version,
+          row.handler_comparator,
+          row.handler_installer,
+          row.handler_restart_redfish,
+          row.handler_execution_order,
+          row.inventory_source,
+          row.applicability,
+          row.approved,
+          row.excluded,
+          row.allow_downgrade,
+          row.action,
+          row.final_version,
+          row.changed,
+          row.skipped,
+          row.verification_status,
+          row.verification_passed
+        ] | map('to_json') | join(',')
+      }}
+      {% endfor %}
+    dest: "{{ idrac_update_report_latest_dir }}/idrac_update_summary.csv"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Export latest per-host update JSON  # noqa: run-once[task]
+  ansible.builtin.copy:
+    content: "{{ hostvars[item].idrac_update_report_entry | to_nice_json }}"
+    dest: "{{ idrac_update_report_latest_dir }}/{{ item }}.json"
+    mode: "0644"
+  loop: "{{ ansible_play_hosts_all }}"
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - hostvars[item].idrac_update_report_entry is defined
+
+- name: Report | Archive update summary JSON  # noqa: run-once[task]
+  ansible.builtin.copy:
+    src: "{{ idrac_update_report_latest_dir }}/idrac_update_summary.json"
+    dest: "{{ idrac_update_report_archive_dir }}/idrac_update_summary.json"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+
+- name: Report | Archive update summary CSV  # noqa: run-once[task]
+  ansible.builtin.copy:
+    src: "{{ idrac_update_report_latest_dir }}/idrac_update_summary.csv"
+    dest: "{{ idrac_update_report_archive_dir }}/idrac_update_summary.csv"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+
+- name: Report | Archive per-host update JSON  # noqa: run-once[task]
+  ansible.builtin.copy:
+    src: "{{ idrac_update_report_latest_dir }}/{{ item }}.json"
+    dest: "{{ idrac_update_report_archive_dir }}/{{ item }}.json"
+    mode: "0644"
+  loop: "{{ ansible_play_hosts_all }}"
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+    - hostvars[item].idrac_update_report_entry is defined
+
+- name: Report | Show update report location  # noqa: run-once[task]
+  ansible.builtin.debug:
+    msg: |
+      Reports written to:
+      {{ idrac_update_report_latest_dir }}
+  run_once: true
+  when: idrac_update_report_enabled | bool

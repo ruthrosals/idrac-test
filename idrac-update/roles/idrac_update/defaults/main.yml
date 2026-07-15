@@ -16,6 +16,10 @@ idrac_update_disallowed_components:
   - disk_firmware
   - cpld
 
+idrac_update_supported_transfer_protocols:
+  - HTTP
+  - HTTPS
+
 idrac_update_allow_duplicate_components: false
 
 idrac_update_items: []

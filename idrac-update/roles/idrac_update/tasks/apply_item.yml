@@ -80,9 +80,19 @@
       verification_passed: false
       attempts: "{{ idrac_update_firmware_item_attempts }}"
       lifecycle_controller_busy_retries: "{{ idrac_update_firmware_item_lc_busy_count }}"
-      status: "{{ idrac_update_firmware_item_status }}"
+      status: >-
+        {{
+          'waiting_timeout'
+          if idrac_update_firmware_item_status in ['waiting_for_lifecycle_controller', 'waiting_for_redfish_recovery']
+          else idrac_update_firmware_item_status
+        }}
       error: "{{ idrac_update_firmware_item_error }}"
-      action: "{{ idrac_update_firmware_item_status }}"
+      action: >-
+        {{
+          'waiting_timeout'
+          if idrac_update_firmware_item_status in ['waiting_for_lifecycle_controller', 'waiting_for_redfish_recovery']
+          else idrac_update_firmware_item_status
+        }}
       applicability: "{{ firmware_item.applicability }}"
       allow_downgrade: "{{ firmware_item.allow_downgrade }}"
       redfish_task_id: "{{ idrac_update_firmware_item_job_id }}"
@@ -118,7 +128,7 @@
     - idrac_update_firmware_item_submitted | bool
 
 - name: Apply item | Wait for full Redfish recovery
-  ansible.builtin.include_tasks: apply_wait_redfish_ready.yml
+  ansible.builtin.include_tasks: wait_lifecycle_controller.yml
   when: idrac_update_firmware_item_submitted | bool
 
 - name: Apply item | Mark Redfish recovered
@@ -180,9 +190,9 @@
       verification_passed: "{{ idrac_update_firmware_item_verified }}"
       attempts: "{{ idrac_update_firmware_item_attempts }}"
       lifecycle_controller_busy_retries: "{{ idrac_update_firmware_item_lc_busy_count }}"
-      status: "{{ 'installed' if idrac_update_firmware_item_verified | bool else 'verification_failed' }}"
+      status: "{{ 'installed' if idrac_update_firmware_item_verified | bool else 'failed' }}"
       error: "{{ '' if idrac_update_firmware_item_verified | bool else idrac_update_firmware_item_error }}"
-      action: installed
+      action: "{{ 'installed' if idrac_update_firmware_item_verified | bool else 'failed' }}"
       applicability: "{{ firmware_item.applicability }}"
       allow_downgrade: "{{ firmware_item.allow_downgrade }}"
       redfish_task_id: "{{ idrac_update_firmware_item_job_id }}"

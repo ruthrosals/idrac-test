@@ -1,0 +1,90 @@
+---
+- name: Report upload | Validate Wasabi upload settings  # noqa: run-once[task]
+  ansible.builtin.assert:
+    that:
+      - idrac_report_upload_provider == 'wasabi'
+      - idrac_report_bucket | length > 0
+      - idrac_report_prefix | length > 0
+      - idrac_report_s3_endpoint_url | length > 0
+      - idrac_report_s3_profile | length > 0
+      - idrac_report_s3_cli_path | length > 0
+    fail_msg: >-
+      Wasabi report upload is enabled, but one or more upload settings are missing.
+      Required: idrac_report_bucket, idrac_report_prefix,
+      idrac_report_s3_endpoint_url, idrac_report_s3_profile, idrac_report_s3_cli_path.
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_report_upload_enabled | bool
+
+- name: Report upload | Check AWS CLI is available for update reports  # noqa: run-once[task]
+  ansible.builtin.command:
+    cmd: "{{ idrac_report_s3_cli_path }} --version"
+  register: idrac_update_report_aws_cli_check
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_report_upload_enabled | bool
+
+- name: Report upload | Upload latest update reports to Wasabi  # noqa: run-once[task]
+  ansible.builtin.command:
+    argv:
+      - "{{ idrac_report_s3_cli_path }}"
+      - s3
+      - sync
+      - "{{ idrac_update_report_latest_dir }}/"
+      - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/idrac-update/latest/"
+      - --endpoint-url
+      - "{{ idrac_report_s3_endpoint_url }}"
+      - --profile
+      - "{{ idrac_report_s3_profile }}"
+  register: idrac_update_report_latest_upload
+  changed_when: false
+  no_log: true
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_report_upload_enabled | bool
+
+- name: Report upload | Upload archived update reports to Wasabi  # noqa: run-once[task]
+  ansible.builtin.command:
+    argv:
+      - "{{ idrac_report_s3_cli_path }}"
+      - s3
+      - sync
+      - "{{ idrac_update_report_archive_dir }}/"
+      - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/idrac-update/archive/{{ idrac_update_report_timestamp }}/"
+      - --endpoint-url
+      - "{{ idrac_report_s3_endpoint_url }}"
+      - --profile
+      - "{{ idrac_report_s3_profile }}"
+  register: idrac_update_report_archive_upload
+  changed_when: false
+  no_log: true
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_report_upload_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+
+- name: Report upload | Show update report upload location  # noqa: run-once[task]
+  ansible.builtin.debug:
+    msg:
+      reports_uploaded_to:
+        - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/idrac-update/latest/"
+        - >-
+          {{
+            's3://' ~ idrac_report_bucket ~ '/' ~ idrac_report_prefix ~
+            '/idrac-update/archive/' ~ idrac_update_report_timestamp ~ '/'
+            if idrac_update_report_archive_enabled | bool
+            else 'archive upload disabled'
+          }}
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_report_upload_enabled | bool

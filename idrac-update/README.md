@@ -8,6 +8,7 @@ This directory contains the iDRAC firmware update role, discovery playbook, repo
 - `docs/DISCOVERY_USAGE.md`: discovery playbook usage and report behavior
 - `docs/WASABI_INTEGRATION.md`: optional Wasabi report upload and firmware archive flow
 - `docs/FIRMWARE_PACKAGE_WORKFLOW.md`: production firmware package onboarding workflow
+- `docs/OPERATIONS_RUNBOOK.md`: production check/apply workflow, safe reruns, JobService troubleshooting, and escalation guidance
 
 ## Firmware Update Scope
 
@@ -77,3 +78,8 @@ The same package set may be sent to mixed server inventories.
 Generated reports are written to `/var/tmp/idrac-update-reports` and may optionally be uploaded to Wasabi. Firmware packages remain served to iDRAC through Nginx.
 
 `requirements.yml` remains at the repository root.
+
+
+## Tested Versions
+
+The current lab-tested dependency baseline is documented in `docs/OPERATIONS_RUNBOOK.md`. The repository pins `dellemc.openmanage` in `requirements.yml`; rerun the validation suite after changing Ansible, Python, the collection version, or the Semaphore image.

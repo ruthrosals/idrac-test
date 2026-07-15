@@ -1,0 +1,158 @@
+---
+- name: Normalize requested update mode
+  ansible.builtin.set_fact:
+    idrac_update_mode_input: "{{ idrac_update_mode | default('check') }}"
+    idrac_update_mode: >-
+      {{
+        idrac_update_mode
+        | default('check')
+        | string
+        | trim
+        | lower
+        | regex_replace('^"|"$', '')
+        | regex_replace("^'|'$", '')
+      }}
+
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - idrac_update_mode in ['check', 'apply']
+      - idrac_ip is defined
+      - idrac_update_user is defined
+      - idrac_update_user | length > 0
+      - idrac_update_password is defined
+      - idrac_update_password | length > 0
+      - idrac_update_items is defined
+    fail_msg: >-
+      Missing required iDRAC update variables. Define idrac_ip,
+      idrac_update_user, idrac_update_password, and idrac_update_items.
+
+- name: Validate firmware update item input schema
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.name is defined
+      - item.name | string | length > 0
+      - item.target_version is defined
+      - item.target_version | string | length > 0
+      - item.installed_version is defined
+      - item.installed_version | string | length > 0
+      - item.firmware_image_uri is defined
+      - item.firmware_image_uri | string | length > 0
+      - item.transfer_protocol is defined
+      - item.transfer_protocol | upper in idrac_update_supported_transfer_protocols
+      - item.allow_downgrade is not defined or item.allow_downgrade is boolean
+      - item.force_update is not defined or item.force_update is boolean
+    fail_msg: >-
+      Invalid firmware update item. Each item must include name, target_version,
+      installed_version, firmware_image_uri, and transfer_protocol. Optional
+      allow_downgrade and force_update must be JSON booleans. Item={{ item }}.
+  loop: "{{ idrac_update_items }}"
+  loop_control:
+    label: "{{ item.name | default('unknown') }}"
+
+- name: Pre-flight | Ensure iDRAC IPs are unique
+  ansible.builtin.assert:
+    that:
+      - idrac_ip_list | length == idrac_ip_list | unique | length
+    fail_msg: "Duplicate idrac_ip values detected in inventory. Each host must have a unique iDRAC IP."
+  vars:
+    idrac_ip_list: "{{ groups['dell_idrac'] | default(ansible_play_hosts_all) | map('extract', hostvars, 'idrac_ip') | list }}"
+  run_once: true
+
+- name: Reset per-host runtime facts
+  ansible.builtin.set_fact:
+    idrac_update_items_normalized: []
+    idrac_update_firmware_inventory: []
+    idrac_update_firmware_inventory_after: []
+    idrac_update_firmware_inventory_details:
+      results: []
+    idrac_update_firmware_inventory_after_details:
+      results: []
+    idrac_update_firmware_versions: {}
+    idrac_update_firmware_versions_after: {}
+    idrac_update_compliance: []
+    idrac_update_compliance_report: []
+    idrac_update_install_plan: []
+    idrac_update_install_results: []
+    idrac_update_firmware_discovery_names: []
+    idrac_update_results:
+      results: []
+    idrac_update_image_uri_checks:
+      results: []
+    idrac_update_final_report: []
+    idrac_update_idrac_expected_version: ""
+    idrac_update_idrac_update_expected: false
+    idrac_update_current_version: "UNKNOWN"
+    idrac_update_final_version: "UNKNOWN"
+    idrac_update_power_state_before: "UNKNOWN"
+    idrac_update_sel_critical_entries_before: []
+    idrac_update_sel_critical_entries_after: []
+    idrac_update_sel_critical_signatures_before: []
+    idrac_update_sel_new_critical_entries: []
+    idrac_update_sel_unmatched_critical_entries: []
+    idrac_update_sel_critical_count_before: 0
+    idrac_update_sel_critical_count_after: 0
+
+- name: Pre-flight | Normalize firmware components from handler registry
+  ansible.builtin.include_tasks: normalize_components.yml
+
+- name: Build requested canonical component list
+  ansible.builtin.set_fact:
+    idrac_update_requested_component_names: "{{ idrac_update_items_normalized | map(attribute='name_normalized') | list }}"
+
+- name: Pre-flight | Report normalized firmware component scope
+  ansible.builtin.debug:
+    msg:
+      normalized_approved_component_set: "{{ idrac_update_approved_component_set }}"
+      normalized_disallowed_component_set: "{{ idrac_update_disallowed_component_set }}"
+      requested_canonical_component_list: "{{ idrac_update_requested_component_names }}"
+  when: idrac_update_mode == 'apply'
+
+- name: Pre-flight | Fail if no requested firmware components are approved
+  ansible.builtin.assert:
+    that:
+      - idrac_update_requested_component_names | intersect(idrac_update_approved_component_set) | length > 0
+    fail_msg: >-
+      No requested firmware components are approved. Requested:
+      {{ idrac_update_requested_component_names }}.
+      Approved:
+      {{ idrac_update_approved_component_set }}.
+      Disallowed:
+      {{ idrac_update_disallowed_component_set }}.
+      Check Semaphore variable group values.
+  when:
+    - idrac_update_mode == 'apply'
+    - idrac_update_items | length > 0
+
+- name: Validate requested canonical components are unique
+  ansible.builtin.assert:
+    that:
+      - >-
+        idrac_update_allow_duplicate_components | bool
+        or idrac_update_requested_component_names | length == idrac_update_requested_component_names | unique | length
+    fail_msg: >-
+      Multiple update items resolve to the same canonical component.
+      Each canonical component may appear only once unless idrac_update_allow_duplicate_components=true.
+      Requested canonical components={{ idrac_update_requested_component_names }}.
+
+- name: Validate normalized firmware update item list
+  ansible.builtin.assert:
+    that:
+      - idrac_update_items_normalized is defined
+      - idrac_update_items_normalized | length > 0
+    fail_msg: "No firmware update items were available after normalization."
+
+- name: Validate normalized firmware update items
+  ansible.builtin.assert:
+    that:
+      - item.name_normalized is defined
+      - item.target_version is defined
+      - item.installed_version is defined
+      - item.firmware_image_uri is defined
+      - item.transfer_protocol is defined
+      - item.transfer_protocol | upper in idrac_update_supported_transfer_protocols
+    fail_msg: "Invalid firmware update item after normalization."
+  loop: "{{ idrac_update_items_normalized }}"
+  loop_control:
+    label: "{{ item.name | default('unknown') }}"

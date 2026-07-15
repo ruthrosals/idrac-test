@@ -1,0 +1,180 @@
+---
+- name: Pre-flight | Build component compliance report
+  ansible.builtin.set_fact:
+    idrac_update_compliance: "{{ idrac_update_compliance | default([]) + [compliance_item] }}"
+  loop: "{{ idrac_update_items_normalized }}"
+  vars:
+    applicable: "{{ item.name_normalized in idrac_update_firmware_versions }}"
+    current_version: >-
+      {{
+        idrac_update_firmware_versions[item.name_normalized]
+        if item.name_normalized in idrac_update_firmware_versions
+        else 'NOT_APPLICABLE'
+      }}
+    expected_version: "{{ item.installed_version | default(item.target_version) }}"
+    approved: "{{ item.name_normalized in idrac_update_approved_component_set }}"
+    excluded: "{{ item.name_normalized in idrac_update_disallowed_component_set }}"
+    allow_downgrade: "{{ item.allow_downgrade | default(false) | bool }}"
+    force_update: "{{ item.force_update | default(false) | bool }}"
+    install_when_absent: "{{ item.install_when_absent | default(false) | bool }}"
+    current_numeric_supported: >-
+      {{
+        item.handler_comparator == 'dotted_numeric'
+        and current_version is match('^[0-9]+(\.[0-9]+)+$')
+      }}
+    expected_numeric_supported: >-
+      {{
+        item.handler_comparator == 'dotted_numeric'
+        and expected_version is match('^[0-9]+(\.[0-9]+)+$')
+      }}
+    current_uefi_supported: >-
+      {{
+        item.handler_comparator == 'uefi_revision'
+        and current_version is match('^[0-9]+[A-Za-z][0-9]+$')
+      }}
+    expected_uefi_supported: >-
+      {{
+        item.handler_comparator == 'uefi_revision'
+        and expected_version is match('^[0-9]+[A-Za-z][0-9]+$')
+      }}
+    version_comparison_supported: >-
+      {{
+        (current_numeric_supported | string | lower == 'true' and expected_numeric_supported | string | lower == 'true')
+        or (current_uefi_supported | string | lower == 'true' and expected_uefi_supported | string | lower == 'true')
+      }}
+    current_numeric_parts: >-
+      {{
+        current_version.split('.') | map('int') | list
+        if current_numeric_supported | string | lower == 'true'
+        else []
+      }}
+    expected_numeric_parts: >-
+      {{
+        expected_version.split('.') | map('int') | list
+        if expected_numeric_supported | string | lower == 'true'
+        else []
+      }}
+    current_uefi_parts: >-
+      {{
+        [
+          current_version | regex_replace('[A-Za-z].*$', '') | int,
+          current_version | regex_replace('^[0-9]+[A-Za-z]', '') | int
+        ]
+        if current_uefi_supported | string | lower == 'true'
+        else []
+      }}
+    expected_uefi_parts: >-
+      {{
+        [
+          expected_version | regex_replace('[A-Za-z].*$', '') | int,
+          expected_version | regex_replace('^[0-9]+[A-Za-z]', '') | int
+        ]
+        if expected_uefi_supported | string | lower == 'true'
+        else []
+      }}
+    comparison_current_parts: >-
+      {{
+        current_uefi_parts
+        if item.handler_comparator == 'uefi_revision'
+        else current_numeric_parts
+      }}
+    comparison_expected_parts: >-
+      {{
+        expected_uefi_parts
+        if item.handler_comparator == 'uefi_revision'
+        else expected_numeric_parts
+      }}
+    version_relation: >-
+      {% if current_version == expected_version %}equal
+      {% elif current_version in ['UNKNOWN', 'NOT_APPLICABLE'] %}unknown
+      {% elif (version_comparison_supported | string | lower) != 'true' %}unknown
+      {% elif comparison_current_parts < comparison_expected_parts %}older
+      {% elif comparison_current_parts > comparison_expected_parts %}newer
+      {% else %}equal
+      {% endif %}
+    comparison_reason: >-
+      {% if current_version == expected_version %}versions match expected installed version
+      {% elif current_version == 'NOT_APPLICABLE' %}component is not present in Redfish inventory
+      {% elif current_version == 'UNKNOWN' %}current version is unknown
+      {% elif (version_comparison_supported | string | lower) != 'true' %}version format is not supported for comparison
+      {% elif item.handler_comparator == 'uefi_revision' %}compared UEFI diagnostics revision values
+      {% else %}compared dotted numeric version values
+      {% endif %}
+    drift: "{{ (version_relation | trim) != 'equal' }}"
+    firmware_action: >-
+      {% if item.name_normalized in idrac_update_disallowed_component_set %}excluded
+      {% elif item.name_normalized not in idrac_update_approved_component_set %}excluded
+      {% elif item.name_normalized not in idrac_update_firmware_versions and not install_when_absent | bool %}not_applicable
+      {% elif force_update | bool %}forced_update
+      {% elif item.name_normalized not in idrac_update_firmware_versions and install_when_absent | bool %}upgrade_required
+      {% elif current_version == 'UNKNOWN' %}unknown
+      {% elif (version_relation | trim) == 'equal' %}compliant
+      {% elif (version_relation | trim) == 'older' %}upgrade_required
+      {% elif (version_relation | trim) == 'newer' and allow_downgrade | bool %}downgrade_required
+      {% elif (version_relation | trim) == 'newer' %}newer_than_target
+      {% else %}version_mismatch
+      {% endif %}
+    should_install: >-
+      {{
+        item.name_normalized in idrac_update_approved_component_set
+        and item.name_normalized not in idrac_update_disallowed_component_set
+        and (
+          (
+            force_update | bool
+            and (
+              item.name_normalized in idrac_update_firmware_versions
+              or install_when_absent | bool
+            )
+          )
+          or (
+            item.name_normalized in idrac_update_firmware_versions
+            and current_version != 'UNKNOWN'
+            and (version_relation | trim) == 'older'
+          )
+          or (
+            item.name_normalized in idrac_update_firmware_versions
+            and current_version != 'UNKNOWN'
+            and (version_relation | trim) == 'newer'
+            and allow_downgrade | bool
+          )
+          or (
+            item.name_normalized not in idrac_update_firmware_versions
+            and install_when_absent | bool
+          )
+        )
+      }}
+    compliance_item:
+      name: "{{ item.name }}"
+      component: "{{ item.name_normalized }}"
+      normalized_name: "{{ item.name_normalized }}"
+      current_version: "{{ current_version }}"
+      target_version: "{{ item.target_version }}"
+      expected_installed_version: "{{ expected_version }}"
+      firmware_image_uri: "{{ item.firmware_image_uri }}"
+      transfer_protocol: "{{ item.transfer_protocol }}"
+      applicability: "{{ 'applicable' if item.name_normalized in idrac_update_firmware_versions else 'not_applicable' }}"
+      approved: "{{ approved }}"
+      excluded: "{{ excluded }}"
+      allow_downgrade: "{{ allow_downgrade }}"
+      force_update: "{{ force_update }}"
+      handler_comparator: "{{ item.handler_comparator }}"
+      handler_installer: "{{ item.handler_installer }}"
+      handler_restart_redfish: "{{ item.handler_restart_redfish }}"
+      handler_execution_order: "{{ item.handler_execution_order }}"
+      inventory_source: "{{ item.inventory_source }}"
+      install_when_absent: "{{ install_when_absent }}"
+      drift: "{{ drift }}"
+      version_relation: "{{ version_relation | trim }}"
+      version_comparison_supported: "{{ version_comparison_supported }}"
+      comparison_current_parts: "{{ comparison_current_parts }}"
+      comparison_expected_parts: "{{ comparison_expected_parts }}"
+      parsed_current_revision: "{{ current_uefi_parts[1] if item.handler_comparator == 'uefi_revision' and current_uefi_parts | length > 1 else '' }}"
+      parsed_expected_revision: "{{ expected_uefi_parts[1] if item.handler_comparator == 'uefi_revision' and expected_uefi_parts | length > 1 else '' }}"
+      comparison_reason: "{{ comparison_reason | trim }}"
+      action: "{{ firmware_action | trim }}"
+      should_install: "{{ should_install }}"
+      skip_reason: "{{ firmware_action | trim }}"
+
+- name: Pre-flight | Publish component compliance report
+  ansible.builtin.set_fact:
+    idrac_update_compliance_report: "{{ idrac_update_compliance }}"

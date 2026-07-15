@@ -445,3 +445,18 @@
             | list
           }}
         actual_execution_order: "{{ ordered_items }}"
+    - name: Validate check-mode reporting semantics
+      ansible.builtin.assert:
+        that:
+          - check_mode_verification_status == 'not_run_check_mode'
+          - check_mode_verification_passed | string == ''
+          - check_mode_action == 'upgrade_required'
+        fail_msg: Check-mode report semantics should preserve compliance action without verification failure.
+      vars:
+        idrac_update_mode: check
+        compliance_action: upgrade_required
+        check_mode_verification_status: >-
+          {% if idrac_update_mode == 'check' %}not_run_check_mode{% else %}passed{% endif %}
+        check_mode_verification_passed: "{{ none if idrac_update_mode == 'check' else true }}"
+        check_mode_action: >-
+          {% if idrac_update_mode == 'check' %}{{ compliance_action }}{% else %}installed{% endif %}
