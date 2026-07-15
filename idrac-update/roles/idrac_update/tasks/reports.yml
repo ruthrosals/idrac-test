@@ -58,15 +58,22 @@
   run_once: true
   when: idrac_update_report_enabled | bool
 
-- name: Report | Create archive update report directory  # noqa: run-once[task] risky-file-permissions
-  ansible.builtin.file:
-    path: "{{ idrac_update_report_archive_dir }}"
-    state: directory
+- name: Report | Set update report run ID  # noqa: run-once[task] var-naming[no-role-prefix]
+  ansible.builtin.set_fact:
+    idrac_report_run_id: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
   delegate_to: localhost
+  delegate_facts: true
   run_once: true
-  when:
-    - idrac_update_report_enabled | bool
-    - idrac_update_report_archive_enabled | bool
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Set update archive directory  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_report_archive_dir: >-
+      {{ idrac_update_report_dir }}/archive/{{ hostvars.localhost.idrac_report_run_id }}
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when: idrac_update_report_enabled | bool
 
 - name: Report | Reset consolidated update report data  # noqa: run-once[task]
   ansible.builtin.set_fact:
@@ -191,10 +198,55 @@
     - idrac_update_report_enabled | bool
     - hostvars[item].idrac_update_report_entry is defined
 
+- name: Report | Set expected update report files  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_expected_report_files: >-
+      {{
+        [
+          'idrac_update_summary.json',
+          'idrac_update_summary.csv'
+        ]
+        + (ansible_play_hosts_all | map('regex_replace', '$', '.json') | list)
+      }}
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Verify complete local update report set  # noqa: run-once[task]
+  ansible.builtin.stat:
+    path: "{{ idrac_update_report_latest_dir }}/{{ item }}"
+  loop: "{{ hostvars.localhost.idrac_update_expected_report_files }}"
+  register: idrac_update_expected_report_file_stats
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Fail if local update report set is incomplete  # noqa: run-once[task]
+  ansible.builtin.assert:
+    that:
+      - idrac_update_expected_report_file_stats.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+    fail_msg: >-
+      Update report publication aborted because one or more expected local report files are missing.
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Create archive update report directory  # noqa: run-once[task] risky-file-permissions
+  ansible.builtin.file:
+    path: "{{ hostvars.localhost.idrac_update_report_archive_dir }}"
+    state: directory
+    recurse: false
+  delegate_to: localhost
+  run_once: true
+  when:
+    - idrac_update_report_enabled | bool
+    - idrac_update_report_archive_enabled | bool
+
 - name: Report | Archive update summary JSON  # noqa: run-once[task]
   ansible.builtin.copy:
     src: "{{ idrac_update_report_latest_dir }}/idrac_update_summary.json"
-    dest: "{{ idrac_update_report_archive_dir }}/idrac_update_summary.json"
+    dest: "{{ hostvars.localhost.idrac_update_report_archive_dir }}/idrac_update_summary.json"
     mode: "0644"
   delegate_to: localhost
   run_once: true
@@ -205,7 +257,7 @@
 - name: Report | Archive update summary CSV  # noqa: run-once[task]
   ansible.builtin.copy:
     src: "{{ idrac_update_report_latest_dir }}/idrac_update_summary.csv"
-    dest: "{{ idrac_update_report_archive_dir }}/idrac_update_summary.csv"
+    dest: "{{ hostvars.localhost.idrac_update_report_archive_dir }}/idrac_update_summary.csv"
     mode: "0644"
   delegate_to: localhost
   run_once: true
@@ -216,7 +268,7 @@
 - name: Report | Archive per-host update JSON  # noqa: run-once[task]
   ansible.builtin.copy:
     src: "{{ idrac_update_report_latest_dir }}/{{ item }}.json"
-    dest: "{{ idrac_update_report_archive_dir }}/{{ item }}.json"
+    dest: "{{ hostvars.localhost.idrac_update_report_archive_dir }}/{{ item }}.json"
     mode: "0644"
   loop: "{{ ansible_play_hosts_all }}"
   delegate_to: localhost

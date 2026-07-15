@@ -82,7 +82,7 @@ Reports are written outside the Git checkout:
 /var/tmp/idrac-update-reports/updates/latest
 ```
 
-Archive directories are used only when archive is enabled:
+Archive directories are enabled by default and retain timestamped complete snapshots:
 
 ```text
 /var/tmp/idrac-update-reports/discovery/archive/<timestamp>
@@ -100,6 +100,19 @@ aws s3 ls s3://<bucket> --profile wasabi --endpoint-url https://s3.ca-central-1.
 ```
 
 Reports upload under the configured `idrac_report_prefix`. Firmware packages remain served to iDRAC from Nginx, not directly from Wasabi.
+
+When report upload is enabled, `latest/` is published as a complete snapshot of the most recent successful run. Every expected object is republished, including summary JSON, summary CSV, and each current host JSON file. Stale host JSON files from older inventory runs are removed as part of latest publication.
+
+Archives are retained by completed run count. Defaults keep the newest three discovery archives and newest three update archives both locally and in Wasabi:
+
+```yaml
+idrac_discovery_report_archive_enabled: true
+idrac_discovery_report_archive_retention: 3
+idrac_update_report_archive_enabled: true
+idrac_update_report_archive_retention: 3
+```
+
+After four successful archive runs with retention set to `3`, the oldest timestamped archive prefix is deleted. Malformed archive directories or S3 prefixes are ignored.
 
 ## Inspecting Dell Job IDs
 

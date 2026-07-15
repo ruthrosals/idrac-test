@@ -11,12 +11,14 @@
     idrac_user: "{{ lookup('env', 'IDRAC_USERNAME') }}"
     idrac_password: "{{ lookup('env', 'IDRAC_PASSWORD') }}"
     idrac_discovery_report_enabled: true
-    idrac_discovery_report_archive_enabled: false
+    idrac_discovery_report_archive_enabled: true
     idrac_discovery_report_dir: "/var/tmp/idrac-update-reports/discovery"
-    idrac_report_archive_timestamp: ""
-    idrac_discovery_report_timestamp: "{{ idrac_report_archive_timestamp }}"
+    idrac_report_run_id: ""
+    idrac_report_archive_timestamp: "{{ idrac_report_run_id }}"
+    idrac_discovery_report_timestamp: "{{ idrac_report_run_id }}"
     idrac_discovery_report_latest_dir: "{{ idrac_discovery_report_dir }}/latest"
-    idrac_discovery_report_archive_dir: "{{ idrac_discovery_report_dir }}/archive/{{ idrac_report_archive_timestamp }}"
+    idrac_discovery_report_archive_dir: "{{ idrac_discovery_report_dir }}/archive/{{ idrac_report_run_id }}"
+    idrac_discovery_report_archive_retention: 3
     idrac_report_upload_enabled: false
     idrac_report_upload_provider: "wasabi"
     idrac_report_bucket: ""
@@ -498,26 +500,22 @@
       when: idrac_discovery_report_enabled | bool
 
 
-    - name: Report | Set discovery archive timestamp  # noqa: run-once[task]
+    - name: Report | Set discovery report run ID  # noqa: run-once[task]
       ansible.builtin.set_fact:
-        idrac_report_archive_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+        idrac_report_run_id: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
       delegate_to: localhost
       delegate_facts: true
       run_once: true
-      when:
-        - idrac_discovery_report_enabled | bool
-        - idrac_discovery_report_archive_enabled | bool
+      when: idrac_discovery_report_enabled | bool
 
     - name: Report | Set discovery archive directory  # noqa: run-once[task]
       ansible.builtin.set_fact:
         idrac_discovery_report_archive_dir: >-
-          {{ idrac_discovery_report_dir }}/archive/{{ hostvars.localhost.idrac_report_archive_timestamp }}
+          {{ idrac_discovery_report_dir }}/archive/{{ hostvars.localhost.idrac_report_run_id }}
       delegate_to: localhost
       delegate_facts: true
       run_once: true
-      when:
-        - idrac_discovery_report_enabled | bool
-        - idrac_discovery_report_archive_enabled | bool
+      when: idrac_discovery_report_enabled | bool
 
     - name: Report | Reset consolidated discovery report data  # noqa: run-once[task]
       ansible.builtin.set_fact:
@@ -663,6 +661,40 @@
         - hostvars[item].host_discovery is defined
         - hostvars[item].host_discovery[item] is defined
 
+    - name: Report | Set expected discovery report files  # noqa: run-once[task]
+      ansible.builtin.set_fact:
+        idrac_discovery_expected_report_files: >-
+          {{
+            [
+              'idrac_discovery_summary.json',
+              'idrac_discovery_summary.csv'
+            ]
+            + (ansible_play_hosts_all | map('regex_replace', '$', '.json') | list)
+          }}
+      delegate_to: localhost
+      delegate_facts: true
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Verify complete local discovery report set  # noqa: run-once[task]
+      ansible.builtin.stat:
+        path: "{{ idrac_discovery_report_latest_dir }}/{{ item }}"
+      loop: "{{ hostvars.localhost.idrac_discovery_expected_report_files }}"
+      register: idrac_discovery_expected_report_file_stats
+      delegate_to: localhost
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
+    - name: Report | Fail if local discovery report set is incomplete  # noqa: run-once[task]
+      ansible.builtin.assert:
+        that:
+          - idrac_discovery_expected_report_file_stats.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+        fail_msg: >-
+          Discovery report publication aborted because one or more expected local report files are missing.
+      delegate_to: localhost
+      run_once: true
+      when: idrac_discovery_report_enabled | bool
+
     - name: Report | Create archive discovery report directory  # noqa: run-once[task] risky-file-permissions
       ansible.builtin.file:
         path: "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}"
@@ -748,61 +780,58 @@
         - idrac_discovery_report_enabled | bool
         - idrac_report_upload_enabled | bool
 
-    - name: Report upload | Upload latest discovery reports to Wasabi  # noqa: run-once[task]
+    - name: Report upload | Publish discovery reports to Wasabi  # noqa: run-once[task]
       ansible.builtin.command:
         argv:
-          - "{{ idrac_report_s3_cli_path }}"
-          - s3
-          - sync
-          - "{{ idrac_discovery_report_latest_dir }}/"
-          - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/discovery/latest/"
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/../scripts/publish_report_snapshot.py"
+          - --report-type
+          - discovery
+          - --report-s3-path
+          - discovery
+          - --run-id
+          - "{{ hostvars.localhost.idrac_report_run_id }}"
+          - --local-latest-dir
+          - "{{ idrac_discovery_report_latest_dir }}"
+          - --local-archive-dir
+          - "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}"
+          - --retention
+          - "{{ idrac_discovery_report_archive_retention | string }}"
+          - --bucket
+          - "{{ idrac_report_bucket }}"
+          - --prefix
+          - "{{ idrac_report_prefix }}"
           - --endpoint-url
           - "{{ idrac_report_s3_endpoint_url }}"
           - --profile
           - "{{ idrac_report_s3_profile }}"
-      register: idrac_discovery_report_latest_upload
-      changed_when: false
-      no_log: true
+          - --aws-cli
+          - "{{ idrac_report_s3_cli_path }}"
+          - --expected-files-json
+          - "{{ hostvars.localhost.idrac_discovery_expected_report_files | to_json }}"
+          - --archive-enabled
+          - "{{ idrac_discovery_report_archive_enabled | bool | ternary('true', 'false') }}"
+      register: idrac_discovery_report_publish
+      changed_when: idrac_discovery_report_publish.rc == 0
       delegate_to: localhost
       run_once: true
       when:
         - idrac_discovery_report_enabled | bool
         - idrac_report_upload_enabled | bool
 
-    - name: Report upload | Upload archived discovery reports to Wasabi  # noqa: run-once[task]
-      ansible.builtin.command:
-        argv:
-          - "{{ idrac_report_s3_cli_path }}"
-          - s3
-          - sync
-          - "{{ hostvars.localhost.idrac_discovery_report_archive_dir }}/"
-          - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/discovery/archive/{{ hostvars.localhost.idrac_report_archive_timestamp }}/"
-          - --endpoint-url
-          - "{{ idrac_report_s3_endpoint_url }}"
-          - --profile
-          - "{{ idrac_report_s3_profile }}"
-      register: idrac_discovery_report_archive_upload
-      changed_when: false
-      no_log: true
+    - name: Report upload | Store discovery publication result  # noqa: run-once[task]
+      ansible.builtin.set_fact:
+        idrac_discovery_report_publish_result: "{{ idrac_discovery_report_publish.stdout | from_json }}"
       delegate_to: localhost
+      delegate_facts: true
       run_once: true
       when:
         - idrac_discovery_report_enabled | bool
         - idrac_report_upload_enabled | bool
-        - idrac_discovery_report_archive_enabled | bool
 
-    - name: Report upload | Show discovery report upload location  # noqa: run-once[task]
+    - name: Report upload | Show discovery report publication result  # noqa: run-once[task]
       ansible.builtin.debug:
-        msg:
-          reports_uploaded_to:
-            - "s3://{{ idrac_report_bucket }}/{{ idrac_report_prefix }}/discovery/latest/"
-            - >-
-              {{
-                's3://' ~ idrac_report_bucket ~ '/' ~ idrac_report_prefix ~
-                '/discovery/archive/' ~ hostvars.localhost.idrac_report_archive_timestamp ~ '/'
-                if idrac_discovery_report_archive_enabled | bool
-                else 'archive upload disabled'
-              }}
+        msg: "{{ hostvars.localhost.idrac_discovery_report_publish_result }}"
       run_once: true
       when:
         - idrac_discovery_report_enabled | bool

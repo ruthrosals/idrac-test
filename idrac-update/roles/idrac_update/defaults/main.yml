@@ -106,9 +106,12 @@ idrac_update_password: "{{ lookup('env', 'IDRAC_PASSWORD') }}"
 idrac_update_report_enabled: true
 idrac_update_report_dir: "/var/tmp/idrac-update-reports/updates"
 idrac_update_report_latest_dir: "{{ idrac_update_report_dir }}/latest"
-idrac_update_report_archive_enabled: false
-idrac_update_report_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
-idrac_update_report_archive_dir: "{{ idrac_update_report_dir }}/archive/{{ idrac_update_report_timestamp }}"
+idrac_update_report_archive_enabled: true
+idrac_report_run_id: ""  # noqa: var-naming[no-role-prefix]
+idrac_update_report_run_id: "{{ idrac_report_run_id }}"
+idrac_update_report_timestamp: "{{ idrac_report_run_id }}"
+idrac_update_report_archive_dir: "{{ idrac_update_report_dir }}/archive/{{ idrac_report_run_id }}"
+idrac_update_report_archive_retention: 3
 
 idrac_report_upload_enabled: false  # noqa: var-naming[no-role-prefix]
 idrac_report_upload_provider: "wasabi"  # noqa: var-naming[no-role-prefix]
