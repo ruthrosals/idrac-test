@@ -15,5 +15,3 @@
   ansible.builtin.include_tasks: verify_item.yml
 - name: Write update reports
   ansible.builtin.include_tasks: reports.yml
-- name: Upload update reports
-  ansible.builtin.include_tasks: upload_reports.yml

@@ -1,0 +1,49 @@
+---
+# This task file runs in a non-serial pre-play. Do not move this into the serial
+# firmware play: run_once is evaluated once per serial batch there, which is not
+# suitable for whole-run report initialization.
+- name: Report | Initialize update report run  # noqa: run-once[task] var-naming[no-role-prefix]
+  ansible.builtin.set_fact:
+    idrac_report_run_id: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+    idrac_update_report_run_hosts: "{{ ansible_play_hosts_all }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Set update report directories  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_report_staging_dir: >-
+      {{ idrac_update_report_dir }}/staging/{{ hostvars.localhost.idrac_report_run_id }}
+    idrac_update_report_archive_dir: >-
+      {{ idrac_update_report_dir }}/archive/{{ hostvars.localhost.idrac_report_run_id }}
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Reset update staging directory for this run  # noqa: run-once[task]
+  ansible.builtin.file:
+    path: "{{ hostvars.localhost.idrac_update_report_staging_dir }}"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Create update staging directory for this run  # noqa: run-once[task] risky-file-permissions
+  ansible.builtin.file:
+    path: "{{ hostvars.localhost.idrac_update_report_staging_dir }}"
+    state: directory
+    mode: "0775"
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Show initialized update report run  # noqa: run-once[task]
+  ansible.builtin.debug:
+    msg:
+      run_id: "{{ hostvars.localhost.idrac_report_run_id }}"
+      run_hosts: "{{ hostvars.localhost.idrac_update_report_run_hosts }}"
+      staging_dir: "{{ hostvars.localhost.idrac_update_report_staging_dir }}"
+  run_once: true
+  when: idrac_update_report_enabled | bool

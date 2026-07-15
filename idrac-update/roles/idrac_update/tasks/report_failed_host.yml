@@ -1,0 +1,36 @@
+---
+- name: Report | Build failed host update report entry
+  ansible.builtin.set_fact:
+    idrac_update_report_entry:
+      inventory_hostname: "{{ inventory_hostname }}"
+      idrac_ip: "{{ idrac_ip | default('UNKNOWN') }}"
+      mode: "{{ idrac_update_mode | default('unknown') }}"
+      power_state_before: "{{ idrac_update_power_state_before | default('UNKNOWN') }}"
+      sel_critical_before: "{{ idrac_update_sel_critical_count_before | default('not_checked') }}"
+      sel_critical_after: "{{ idrac_update_sel_critical_count_after | default('not_checked') }}"
+      compliance: "{{ idrac_update_compliance_report | default([]) }}"
+      final_versions: "{{ idrac_update_firmware_versions_after | default(idrac_update_firmware_versions | default({})) }}"
+      firmware_verification: "{{ idrac_update_final_report | default([]) }}"
+      install_results: "{{ idrac_update_install_results | default([]) }}"
+      report_status: "failed"
+      error:
+        task: "{{ ansible_failed_task.name | default('unknown') }}"
+        message: "{{ ansible_failed_result.msg | default(ansible_failed_result | default('unknown failure')) }}"
+  when: idrac_update_report_enabled | default(true) | bool
+
+- name: Report | Ensure update staging directory exists for failed host  # noqa: risky-file-permissions
+  ansible.builtin.file:
+    path: "{{ hostvars.localhost.idrac_update_report_staging_dir }}"
+    state: directory
+    mode: "0775"
+  delegate_to: localhost
+  when: idrac_update_report_enabled | default(true) | bool
+
+- name: Report | Export staged failed-host update JSON
+  ansible.builtin.copy:
+    content: "{{ idrac_update_report_entry | to_nice_json }}"
+    dest: "{{ hostvars.localhost.idrac_update_report_staging_dir }}/{{ inventory_hostname }}.json"
+    mode: "0644"
+    force: true
+  delegate_to: localhost
+  when: idrac_update_report_enabled | default(true) | bool

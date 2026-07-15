@@ -1,0 +1,215 @@
+---
+# This task file must run from the final non-serial aggregation play. Do not
+# include it from the serial firmware play: run_once would execute once per
+# serial batch and could aggregate before later hosts write their staged JSON.
+- name: Report | Reset consolidated update report data  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_summary_hosts: []
+    idrac_update_csv_rows: []
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Set expected update report files  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_expected_report_files: >-
+      {{
+        [
+          'idrac_update_summary.json',
+          'idrac_update_summary.csv'
+        ]
+        + (hostvars.localhost.idrac_update_report_run_hosts | map('regex_replace', '$', '.json') | list)
+      }}
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Verify staged per-host update JSON files  # noqa: run-once[task]
+  ansible.builtin.stat:
+    path: "{{ hostvars.localhost.idrac_update_report_staging_dir }}/{{ item }}.json"
+  loop: "{{ hostvars.localhost.idrac_update_report_run_hosts }}"
+  register: idrac_update_staged_host_file_stats
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Fail if staged update host JSON is incomplete  # noqa: run-once[task]
+  ansible.builtin.assert:
+    that:
+      - idrac_update_staged_host_file_stats.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+    fail_msg: >-
+      Update report staging is incomplete because one or more current-run host JSON files are missing.
+      Expected hosts={{ hostvars.localhost.idrac_update_report_run_hosts }}.
+      Staging={{ hostvars.localhost.idrac_update_report_staging_dir }}.
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Read staged per-host update JSON files  # noqa: run-once[task]
+  ansible.builtin.slurp:
+    src: "{{ hostvars.localhost.idrac_update_report_staging_dir }}/{{ item }}.json"
+  loop: "{{ hostvars.localhost.idrac_update_report_run_hosts }}"
+  register: idrac_update_staged_host_reports
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Build consolidated update report data  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_summary_hosts: >-
+      {{
+        idrac_update_summary_hosts | default([])
+        + [item.content | b64decode | from_json]
+      }}
+  loop: "{{ idrac_update_staged_host_reports.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('unknown') }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Build update CSV rows  # noqa: run-once[task]
+  ansible.builtin.set_fact:
+    idrac_update_csv_rows: "{{ idrac_update_csv_rows | default([]) + [idrac_update_csv_row] }}"
+  loop: "{{ hostvars.localhost.idrac_update_summary_hosts | default([]) | subelements('firmware_verification', skip_missing=true) }}"
+  loop_control:
+    label: "{{ item.0.inventory_hostname }} {{ item.1.name }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  vars:
+    idrac_update_csv_row:
+      inventory_hostname: "{{ item.0.inventory_hostname }}"
+      idrac_ip: "{{ item.0.idrac_ip }}"
+      mode: "{{ item.0.mode }}"
+      component: "{{ item.1.component }}"
+      component_name: "{{ item.1.name }}"
+      current_version: "{{ item.1.current_version }}"
+      target_version: "{{ item.1.target_version }}"
+      expected_installed_version: "{{ item.1.expected_installed_version }}"
+      handler_comparator: "{{ item.1.handler_comparator }}"
+      handler_installer: "{{ item.1.handler_installer }}"
+      handler_restart_redfish: "{{ item.1.handler_restart_redfish }}"
+      handler_execution_order: "{{ item.1.handler_execution_order }}"
+      inventory_source: "{{ item.1.inventory_source }}"
+      applicability: "{{ item.1.applicability }}"
+      approved: "{{ item.1.approved }}"
+      excluded: "{{ item.1.excluded }}"
+      allow_downgrade: "{{ item.1.allow_downgrade }}"
+      action: "{{ item.1.action }}"
+      firmware_image_uri: "{{ item.1.firmware_image_uri }}"
+      image_uri_reachable: "{{ item.1.image_uri_reachable }}"
+      image_uri_status: "{{ item.1.image_uri_status }}"
+      deployment_ready: "{{ item.1.deployment_ready }}"
+      readiness_reason: "{{ item.1.readiness_reason }}"
+      final_version: "{{ item.1.final_version }}"
+      changed: "{{ item.1.changed }}"
+      skipped: "{{ item.1.skipped }}"
+      verification_status: "{{ item.1.verification_status }}"
+      verification_passed: "{{ item.1.verification_passed }}"
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Export staged update summary JSON  # noqa: run-once[task]
+  ansible.builtin.copy:
+    content: >-
+      {{
+        {
+          'generated_at': now(utc=true).isoformat(),
+          'run_id': hostvars.localhost.idrac_report_run_id,
+          'hosts': hostvars.localhost.idrac_update_summary_hosts | default([])
+        }
+        | to_nice_json
+      }}
+    dest: "{{ hostvars.localhost.idrac_update_report_staging_dir }}/idrac_update_summary.json"
+    mode: "0644"
+    force: true
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Export staged update summary CSV  # noqa: run-once[task]
+  ansible.builtin.copy:
+    content: |
+      inventory_hostname,idrac_ip,mode,component,component_name,current_version,target_version,expected_installed_version,handler_comparator,handler_installer,handler_restart_redfish,handler_execution_order,inventory_source,applicability,approved,excluded,allow_downgrade,action,firmware_image_uri,image_uri_reachable,image_uri_status,deployment_ready,readiness_reason,final_version,changed,skipped,verification_status,verification_passed
+      {% for row in hostvars.localhost.idrac_update_csv_rows | default([]) %}
+      {{
+        [
+          row.inventory_hostname,
+          row.idrac_ip,
+          row.mode,
+          row.component,
+          row.component_name,
+          row.current_version,
+          row.target_version,
+          row.expected_installed_version,
+          row.handler_comparator,
+          row.handler_installer,
+          row.handler_restart_redfish,
+          row.handler_execution_order,
+          row.inventory_source,
+          row.applicability,
+          row.approved,
+          row.excluded,
+          row.allow_downgrade,
+          row.action,
+          row.firmware_image_uri,
+          row.image_uri_reachable,
+          row.image_uri_status,
+          row.deployment_ready,
+          row.readiness_reason,
+          row.final_version,
+          row.changed,
+          row.skipped,
+          row.verification_status,
+          row.verification_passed
+        ] | map('to_json') | join(',')
+      }}
+      {% endfor %}
+    dest: "{{ hostvars.localhost.idrac_update_report_staging_dir }}/idrac_update_summary.csv"
+    mode: "0644"
+    force: true
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Find staged update report files  # noqa: run-once[task]
+  ansible.builtin.find:
+    paths: "{{ hostvars.localhost.idrac_update_report_staging_dir }}"
+    file_type: file
+    recurse: false
+  register: idrac_update_staged_report_files
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Report | Validate complete staged update report set  # noqa: run-once[task]
+  ansible.builtin.assert:
+    that:
+      - >-
+        idrac_update_staged_report_files.files
+        | map(attribute='path')
+        | map('basename')
+        | sort
+        | list
+        == hostvars.localhost.idrac_update_expected_report_files | sort
+    fail_msg: >-
+      Update report staging does not exactly match the expected current-run report file set.
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool
+
+- name: Publish finalized update reports
+  ansible.builtin.include_tasks: upload_reports.yml
+
+- name: Report | Fail if any host failed during update run  # noqa: run-once[task]
+  ansible.builtin.assert:
+    that:
+      - hostvars.localhost.idrac_update_summary_hosts | selectattr('report_status', 'equalto', 'failed') | list | length == 0
+    fail_msg: >-
+      One or more hosts failed during the update run. Reports were finalized with failed host entries.
+  delegate_to: localhost
+  run_once: true
+  when: idrac_update_report_enabled | bool

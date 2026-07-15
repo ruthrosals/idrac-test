@@ -1,4 +1,16 @@
 ---
+- name: Initialize iDRAC update report run
+  hosts: dell_idrac
+  gather_facts: false
+  connection: local
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  tasks:
+    - name: Initialize report run for limited target set
+      ansible.builtin.include_role:
+        name: ../roles/idrac_update # noqa: role-name[path]
+        tasks_from: initialize_reports.yml
+
 - name: Update iDRAC firmware using Redfish
   hosts: dell_idrac
   gather_facts: false
@@ -6,5 +18,27 @@
   serial: "{{ idrac_update_serial | default(1) }}"
   vars:
     ansible_python_interpreter: "{{ ansible_playbook_python }}"
-  roles:
-    - role: ../roles/idrac_update # noqa: role-name[path]
+  tasks:
+    - name: Run iDRAC update role with failure report capture
+      block:
+        - name: Run iDRAC update role
+          ansible.builtin.include_role:
+            name: ../roles/idrac_update # noqa: role-name[path]
+      rescue:
+        - name: Write failed host update report
+          ansible.builtin.include_role:
+            name: ../roles/idrac_update # noqa: role-name[path]
+            tasks_from: report_failed_host.yml
+
+- name: Finalize iDRAC update reports
+  hosts: dell_idrac
+  gather_facts: false
+  connection: local
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  tasks:
+    - name: Finalize update reports after all serial batches complete # noqa: run-once[task]
+      ansible.builtin.include_role:
+        name: ../roles/idrac_update # noqa: role-name[path]
+        tasks_from: finalize_reports.yml
+      run_once: true
