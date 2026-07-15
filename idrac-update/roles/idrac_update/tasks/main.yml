@@ -70,90 +70,8 @@
     idrac_update_sel_critical_count_before: 0
     idrac_update_sel_critical_count_after: 0
 
-- name: Normalize approved/disallowed component names
-  ansible.builtin.set_fact:
-    idrac_update_approved_component_set: >-
-      {{
-        idrac_update_approved_components
-        | map('lower')
-        | map('regex_replace', '[^a-z0-9]+', '_')
-        | map('regex_replace', '^_+|_+$', '')
-        | list
-      }}
-    idrac_update_disallowed_component_set: >-
-      {{
-        idrac_update_disallowed_components
-        | map('lower')
-        | map('regex_replace', '[^a-z0-9]+', '_')
-        | map('regex_replace', '^_+|_+$', '')
-        | list
-      }}
-
-
-- name: Initialize normalized update items
-  ansible.builtin.set_fact:
-    idrac_update_items_normalized: []
-
-- name: Normalize requested update items
-  ansible.builtin.set_fact:
-    idrac_update_items_normalized: >-
-      {{
-        idrac_update_items_normalized
-        + [(item | combine({
-          'name_normalized': canonical_name,
-          'name_key': item_name_key,
-          'transfer_protocol': item.transfer_protocol | default('HTTP'),
-          'allow_downgrade': item.allow_downgrade | default(false),
-          'force_update': item.force_update | default(false)
-        }))]
-      }}
-  loop: "{{ idrac_update_items }}"
-  loop_control:
-    label: "{{ item.name }}"
-  vars:
-    item_name_key: >-
-      {{
-        item.name
-        | lower
-        | trim
-        | regex_replace('[^a-z0-9]+', '_')
-        | regex_replace('_+', '_')
-        | regex_replace('^_+|_+$', '')
-      }}
-    canonical_name: >-
-      {{
-        'idrac_lifecycle_controller'
-        if item_name_key in [
-          'idrac',
-          'integrated_dell_remote_access_controller',
-          'lifecycle_controller',
-          'idrac_with_lifecycle_controller',
-          'idrac_lifecycle_controller'
-        ]
-        else 'uefi_diagnostics'
-        if item_name_key in [
-          'diagnostics',
-          'uefi_diagnostics',
-          'dell_64_bit_uefi_diagnostics',
-          '64_bit_uefi_diagnostics'
-        ]
-        else 'os_driver_pack'
-        if item_name_key in [
-          'os_driver_pack',
-          'dell_os_driver_pack',
-          'drivers_for_os_deployment'
-        ]
-        else 'disk_firmware'
-        if 'disk' in item_name_key
-        else 'cpld'
-        if item_name_key == 'cpld' or item_name_key == 'system_cpld'
-        else 'perc'
-        if 'perc' in item_name_key
-        else 'nic'
-        if item_name_key == 'nic' or 'ethernet' in item_name_key or 'network' in item_name_key
-        else item_name_key
-      }}
-
+- name: Pre-flight | Normalize firmware components from handler registry
+  ansible.builtin.include_tasks: normalize_components.yml
 
 - name: Build requested canonical component list
   ansible.builtin.set_fact:
@@ -481,38 +399,31 @@
       }}
     idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
     idrac_update_firmware_alias: >-
-      {{
-        'idrac_lifecycle_controller'
-        if idrac_update_component_name_normalized in [
-          'idrac',
-          'integrated_dell_remote_access_controller',
-          'lifecycle_controller',
-          'idrac_with_lifecycle_controller',
-          'idrac_lifecycle_controller'
-        ]
-        else 'uefi_diagnostics'
-        if (
-          'uefi' in idrac_update_component_name_normalized
-          and 'diagnostics' in idrac_update_component_name_normalized
-        )
-        else 'os_driver_pack'
-        if idrac_update_component_name_normalized in [
-          'os_driver_pack',
-          'dell_os_driver_pack',
-          'drivers_for_os_deployment'
-        ] or (
-          'driver' in idrac_update_component_name_normalized
-          and 'os' in idrac_update_component_name_normalized
-        )
-        else ''
-      }}
+      {%- set ns = namespace(alias='') -%}
+      {%- for handler in idrac_update_component_handlers | dict2items -%}
+      {%- for match_name in handler.value.inventory_match.names | default([]) -%}
+      {%- set match_key = match_name
+        | lower
+        | trim
+        | regex_replace('[^a-z0-9]+', '_')
+        | regex_replace('_+', '_')
+        | regex_replace('^_+|_+$', '') -%}
+      {%- if ns.alias == '' and (
+        idrac_update_component_name_normalized == match_key
+        or idrac_update_component_name_normalized is match('^' ~ match_key ~ '_')
+      ) -%}
+      {%- set ns.alias = handler.key -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.alias }}
 
 - name: Pre-flight | Set iDRAC/Lifecycle Controller firmware version alias from manager
   ansible.builtin.set_fact:
     idrac_update_firmware_versions: >-
       {{
         idrac_update_firmware_versions
-        | combine({'idrac_lifecycle_controller': idrac_update_current_version})
+        | combine({idrac_update_manager_firmware_component: idrac_update_current_version})
       }}
 
 - name: Pre-flight | Fail if iDRAC/Lifecycle Controller firmware version is unavailable
@@ -522,8 +433,8 @@
       from Redfish Manager endpoint. Refusing to continue with UNKNOWN iDRAC version.
   when:
     - >-
-      'idrac_lifecycle_controller' not in idrac_update_firmware_versions
-      or idrac_update_firmware_versions.idrac_lifecycle_controller == 'UNKNOWN'
+      idrac_update_manager_firmware_component not in idrac_update_firmware_versions
+      or idrac_update_firmware_versions[idrac_update_manager_firmware_component] == 'UNKNOWN'
 
 - name: Pre-flight | Build component compliance report
   ansible.builtin.set_fact:
@@ -545,22 +456,22 @@
     install_when_absent: "{{ item.install_when_absent | default(false) | bool }}"
     current_numeric_supported: >-
       {{
-        item.name_normalized in ['idrac_lifecycle_controller', 'os_driver_pack']
+        item.handler_comparator == 'dotted_numeric'
         and current_version is match('^[0-9]+(\.[0-9]+)+$')
       }}
     expected_numeric_supported: >-
       {{
-        item.name_normalized in ['idrac_lifecycle_controller', 'os_driver_pack']
+        item.handler_comparator == 'dotted_numeric'
         and expected_version is match('^[0-9]+(\.[0-9]+)+$')
       }}
     current_uefi_supported: >-
       {{
-        item.name_normalized == 'uefi_diagnostics'
+        item.handler_comparator == 'uefi_revision'
         and current_version is match('^[0-9]+[A-Za-z][0-9]+$')
       }}
     expected_uefi_supported: >-
       {{
-        item.name_normalized == 'uefi_diagnostics'
+        item.handler_comparator == 'uefi_revision'
         and expected_version is match('^[0-9]+[A-Za-z][0-9]+$')
       }}
     version_comparison_supported: >-
@@ -601,13 +512,13 @@
     comparison_current_parts: >-
       {{
         current_uefi_parts
-        if item.name_normalized == 'uefi_diagnostics'
+        if item.handler_comparator == 'uefi_revision'
         else current_numeric_parts
       }}
     comparison_expected_parts: >-
       {{
         expected_uefi_parts
-        if item.name_normalized == 'uefi_diagnostics'
+        if item.handler_comparator == 'uefi_revision'
         else expected_numeric_parts
       }}
     version_relation: >-
@@ -623,7 +534,7 @@
       {% elif current_version == 'NOT_APPLICABLE' %}component is not present in Redfish inventory
       {% elif current_version == 'UNKNOWN' %}current version is unknown
       {% elif (version_comparison_supported | string | lower) != 'true' %}version format is not supported for comparison
-      {% elif item.name_normalized == 'uefi_diagnostics' %}compared UEFI diagnostics revision values
+      {% elif item.handler_comparator == 'uefi_revision' %}compared UEFI diagnostics revision values
       {% else %}compared dotted numeric version values
       {% endif %}
     drift: "{{ (version_relation | trim) != 'equal' }}"
@@ -683,14 +594,19 @@
       excluded: "{{ excluded }}"
       allow_downgrade: "{{ allow_downgrade }}"
       force_update: "{{ force_update }}"
+      handler_comparator: "{{ item.handler_comparator }}"
+      handler_installer: "{{ item.handler_installer }}"
+      handler_restart_redfish: "{{ item.handler_restart_redfish }}"
+      handler_execution_order: "{{ item.handler_execution_order }}"
+      inventory_source: "{{ item.inventory_source }}"
       install_when_absent: "{{ install_when_absent }}"
       drift: "{{ drift }}"
       version_relation: "{{ version_relation | trim }}"
       version_comparison_supported: "{{ version_comparison_supported }}"
       comparison_current_parts: "{{ comparison_current_parts }}"
       comparison_expected_parts: "{{ comparison_expected_parts }}"
-      parsed_current_revision: "{{ current_uefi_parts[1] if item.name_normalized == 'uefi_diagnostics' and current_uefi_parts | length > 1 else '' }}"
-      parsed_expected_revision: "{{ expected_uefi_parts[1] if item.name_normalized == 'uefi_diagnostics' and expected_uefi_parts | length > 1 else '' }}"
+      parsed_current_revision: "{{ current_uefi_parts[1] if item.handler_comparator == 'uefi_revision' and current_uefi_parts | length > 1 else '' }}"
+      parsed_expected_revision: "{{ expected_uefi_parts[1] if item.handler_comparator == 'uefi_revision' and expected_uefi_parts | length > 1 else '' }}"
       comparison_reason: "{{ comparison_reason | trim }}"
       action: "{{ firmware_action | trim }}"
       should_install: "{{ should_install }}"
@@ -837,7 +753,7 @@
     label: "{{ item.name }}"
   when:
     - idrac_update_mode == 'apply'
-    - item.normalized_name == 'idrac_lifecycle_controller'
+    - item.handler_restart_redfish | bool
     - item.should_install | bool
 
 - name: Pre-flight | Check firmware image URI
@@ -894,46 +810,21 @@
     - not item.skipped | default(false)
     - item.status | default(0) not in idrac_update_image_uri_status_codes
 
-- name: Apply mode | Reset ordered firmware execution plan
-  ansible.builtin.set_fact:
-    idrac_update_ordered_install_plan: []
-  when: idrac_update_mode == 'apply'
-
-- name: Apply mode | Add installable firmware items in preferred order
+- name: Apply mode | Build ordered firmware execution plan
   ansible.builtin.set_fact:
     idrac_update_ordered_install_plan: >-
       {{
-        idrac_update_ordered_install_plan
-        + (
-            idrac_update_install_plan
-            | selectattr('should_install', 'equalto', true)
-            | selectattr('normalized_name', 'equalto', item)
-            | list
-          )
-      }}
-  loop: "{{ idrac_update_component_order }}"
-  loop_control:
-    label: "{{ item }}"
-  when: idrac_update_mode == 'apply'
-
-- name: Apply mode | Add installable firmware items not in preferred order
-  ansible.builtin.set_fact:
-    idrac_update_ordered_install_plan: >-
-      {{
-        idrac_update_ordered_install_plan
-        + (
-            idrac_update_install_plan
-            | selectattr('should_install', 'equalto', true)
-            | rejectattr('normalized_name', 'in', idrac_update_component_order)
-            | list
-          )
+        idrac_update_install_plan
+        | selectattr('should_install', 'equalto', true)
+        | sort(attribute='handler_execution_order')
+        | list
       }}
   when: idrac_update_mode == 'apply'
 
 - name: Apply mode | Show effective firmware execution order
   ansible.builtin.debug:
     msg:
-      host: "{{ inventory_hostname }}"
+      heading: "Effective firmware execution order"
       execution_order: "{{ idrac_update_ordered_install_plan | map(attribute='normalized_name') | list }}"
   when: idrac_update_mode == 'apply'
 
@@ -957,6 +848,11 @@
       component: "{{ item.normalized_name }}"
       name: "{{ item.name }}"
       normalized_name: "{{ item.normalized_name }}"
+      handler_comparator: "{{ item.handler_comparator }}"
+      handler_installer: "{{ item.handler_installer }}"
+      handler_restart_redfish: "{{ item.handler_restart_redfish }}"
+      handler_execution_order: "{{ item.handler_execution_order }}"
+      inventory_source: "{{ item.inventory_source }}"
       submitted: false
       job_id: ""
       module_changed: false
@@ -1135,31 +1031,24 @@
       }}
     idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
     idrac_update_firmware_alias: >-
-      {{
-        'idrac_lifecycle_controller'
-        if idrac_update_component_name_normalized in [
-          'idrac',
-          'integrated_dell_remote_access_controller',
-          'lifecycle_controller',
-          'idrac_with_lifecycle_controller',
-          'idrac_lifecycle_controller'
-        ]
-        else 'uefi_diagnostics'
-        if (
-          'uefi' in idrac_update_component_name_normalized
-          and 'diagnostics' in idrac_update_component_name_normalized
-        )
-        else 'os_driver_pack'
-        if idrac_update_component_name_normalized in [
-          'os_driver_pack',
-          'dell_os_driver_pack',
-          'drivers_for_os_deployment'
-        ] or (
-          'driver' in idrac_update_component_name_normalized
-          and 'os' in idrac_update_component_name_normalized
-        )
-        else ''
-      }}
+      {%- set ns = namespace(alias='') -%}
+      {%- for handler in idrac_update_component_handlers | dict2items -%}
+      {%- for match_name in handler.value.inventory_match.names | default([]) -%}
+      {%- set match_key = match_name
+        | lower
+        | trim
+        | regex_replace('[^a-z0-9]+', '_')
+        | regex_replace('_+', '_')
+        | regex_replace('^_+|_+$', '') -%}
+      {%- if ns.alias == '' and (
+        idrac_update_component_name_normalized == match_key
+        or idrac_update_component_name_normalized is match('^' ~ match_key ~ '_')
+      ) -%}
+      {%- set ns.alias = handler.key -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.alias }}
 
 - name: Post-check | Set final iDRAC/Lifecycle Controller firmware version alias from manager
   ansible.builtin.set_fact:
@@ -1167,7 +1056,7 @@
       {{
         idrac_update_firmware_versions_after
         | combine({
-            'idrac_lifecycle_controller': idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN')
+            idrac_update_manager_firmware_component: idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN')
           })
       }}
 
@@ -1178,8 +1067,8 @@
       from Redfish Manager endpoint. Refusing to report compliance with UNKNOWN iDRAC version.
   when:
     - >-
-      'idrac_lifecycle_controller' not in idrac_update_firmware_versions_after
-      or idrac_update_firmware_versions_after.idrac_lifecycle_controller == 'UNKNOWN'
+      idrac_update_manager_firmware_component not in idrac_update_firmware_versions_after
+      or idrac_update_firmware_versions_after[idrac_update_manager_firmware_component] == 'UNKNOWN'
 
 - name: Post-check | Extract final state
   ansible.builtin.set_fact:
@@ -1267,6 +1156,11 @@
       target_version: "{{ item.target_version }}"
       expected_installed_version: "{{ expected_version }}"
       version_relation: "{{ item.version_relation }}"
+      handler_comparator: "{{ item.handler_comparator }}"
+      handler_installer: "{{ item.handler_installer }}"
+      handler_restart_redfish: "{{ item.handler_restart_redfish }}"
+      handler_execution_order: "{{ item.handler_execution_order }}"
+      inventory_source: "{{ item.inventory_source }}"
       version_comparison_supported: "{{ item.version_comparison_supported }}"
       comparison_reason: "{{ item.comparison_reason }}"
       applicability: "{{ item.applicability }}"
@@ -1467,6 +1361,11 @@
       current_version: "{{ item.1.current_version }}"
       target_version: "{{ item.1.target_version }}"
       expected_installed_version: "{{ item.1.expected_installed_version }}"
+      handler_comparator: "{{ item.1.handler_comparator }}"
+      handler_installer: "{{ item.1.handler_installer }}"
+      handler_restart_redfish: "{{ item.1.handler_restart_redfish }}"
+      handler_execution_order: "{{ item.1.handler_execution_order }}"
+      inventory_source: "{{ item.1.inventory_source }}"
       applicability: "{{ item.1.applicability }}"
       approved: "{{ item.1.approved }}"
       excluded: "{{ item.1.excluded }}"
@@ -1498,7 +1397,7 @@
 - name: Report | Export latest update summary CSV  # noqa: run-once[task]
   ansible.builtin.copy:
     content: |
-      inventory_hostname,idrac_ip,mode,component,component_name,current_version,target_version,expected_installed_version,applicability,approved,excluded,allow_downgrade,action,final_version,changed,skipped,verification_status,verification_passed
+      inventory_hostname,idrac_ip,mode,component,component_name,current_version,target_version,expected_installed_version,handler_comparator,handler_installer,handler_restart_redfish,handler_execution_order,inventory_source,applicability,approved,excluded,allow_downgrade,action,final_version,changed,skipped,verification_status,verification_passed
       {% for row in hostvars.localhost.idrac_update_csv_rows | default([]) %}
       {{
         [
@@ -1510,6 +1409,11 @@
           row.current_version,
           row.target_version,
           row.expected_installed_version,
+          row.handler_comparator,
+          row.handler_installer,
+          row.handler_restart_redfish,
+          row.handler_execution_order,
+          row.inventory_source,
           row.applicability,
           row.approved,
           row.excluded,

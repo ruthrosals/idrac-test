@@ -30,10 +30,61 @@ idrac_update_image_uri_timeout: 30
 idrac_update_image_uri_status_codes:
   - 200
 
-idrac_update_component_order:
-  - uefi_diagnostics
-  - os_driver_pack
-  - idrac_lifecycle_controller
+idrac_update_component_handlers:
+  idrac_lifecycle_controller:
+    aliases:
+      - idrac
+      - integrated dell remote access controller
+      - lifecycle controller
+      - idrac with lifecycle controller
+      - idrac_lifecycle_controller
+    comparator: dotted_numeric
+    installer: redfish
+    restart_redfish: true
+    execution_order: 30
+    inventory_match:
+      names:
+        - integrated dell remote access controller
+        - lifecycle controller
+      primary_source: manager_firmware_version
+    supports_downgrade: true
+    install_when_absent_default: false
+  uefi_diagnostics:
+    aliases:
+      - diagnostics
+      - uefi diagnostics
+      - dell 64 bit uefi diagnostics
+      - 64 bit uefi diagnostics
+      - uefi_diagnostics
+    comparator: uefi_revision
+    installer: redfish
+    restart_redfish: false
+    execution_order: 10
+    inventory_match:
+      names:
+        - dell 64 bit uefi diagnostics
+        - 64 bit uefi diagnostics
+      primary_source: firmware_inventory
+    supports_downgrade: true
+    install_when_absent_default: false
+  os_driver_pack:
+    aliases:
+      - os driver pack
+      - dell os driver pack
+      - drivers for os deployment
+      - os_driver_pack
+    comparator: dotted_numeric
+    installer: redfish
+    restart_redfish: false
+    execution_order: 20
+    inventory_match:
+      names:
+        - dell os driver pack
+        - os driver pack
+        - drivers for os deployment
+      primary_source: firmware_inventory
+    supports_downgrade: true
+    install_when_absent_default: false
 idrac_update_post_idrac_stabilization_delay: 30
 idrac_update_firmware_submit_retries: 3
 idrac_update_firmware_submit_retry_delay: 20

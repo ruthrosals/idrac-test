@@ -25,6 +25,18 @@ Semaphore and CLI runs execute the same playbooks:
 
 The update role normalizes user-provided firmware items internally, builds a per-host install plan, and verifies final firmware versions from fresh Redfish inventory before reporting compliance.
 
+## Component Handler Registry
+
+The update role uses `idrac_update_component_handlers` as the single registry for supported firmware behavior. Each handler defines aliases, comparator selection, inventory matching, execution order, installer type, downgrade support, and whether the item restarts Redfish services.
+
+The registry currently supports only:
+
+- `idrac_lifecycle_controller`
+- `uefi_diagnostics`
+- `os_driver_pack`
+
+Unknown components and availability-impacting firmware such as BIOS, PERC, NIC, disk firmware, and CPLD are not automatically supported. A package can exist in the firmware repository without being eligible for automated installation.
+
 ## Inventory And Variables
 
 Inventory targets should be grouped under `dell_idrac`. Environment-specific variables can be supplied through inventory, CLI extra vars, or Semaphore variable groups.

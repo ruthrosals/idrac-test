@@ -131,31 +131,24 @@
       }}
     idrac_update_firmware_version: "{{ item.version | default(item.Version | default(item.FirmwareVersion | default('UNKNOWN'))) }}"
     idrac_update_firmware_alias: >-
-      {{
-        'idrac_lifecycle_controller'
-        if idrac_update_component_name_normalized in [
-          'idrac',
-          'integrated_dell_remote_access_controller',
-          'lifecycle_controller',
-          'idrac_with_lifecycle_controller',
-          'idrac_lifecycle_controller'
-        ]
-        else 'uefi_diagnostics'
-        if (
-          'uefi' in idrac_update_component_name_normalized
-          and 'diagnostics' in idrac_update_component_name_normalized
-        )
-        else 'os_driver_pack'
-        if idrac_update_component_name_normalized in [
-          'os_driver_pack',
-          'dell_os_driver_pack',
-          'drivers_for_os_deployment'
-        ] or (
-          'driver' in idrac_update_component_name_normalized
-          and 'os' in idrac_update_component_name_normalized
-        )
-        else ''
-      }}
+      {%- set ns = namespace(alias='') -%}
+      {%- for handler in idrac_update_component_handlers | dict2items -%}
+      {%- for match_name in handler.value.inventory_match.names | default([]) -%}
+      {%- set match_key = match_name
+        | lower
+        | trim
+        | regex_replace('[^a-z0-9]+', '_')
+        | regex_replace('_+', '_')
+        | regex_replace('^_+|_+$', '') -%}
+      {%- if ns.alias == '' and (
+        idrac_update_component_name_normalized == match_key
+        or idrac_update_component_name_normalized is match('^' ~ match_key ~ '_')
+      ) -%}
+      {%- set ns.alias = handler.key -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.alias }}
 
 - name: Apply item | Set refreshed iDRAC/Lifecycle Controller alias from manager
   ansible.builtin.set_fact:
@@ -163,6 +156,6 @@
       {{
         idrac_update_firmware_versions_after
         | combine({
-            'idrac_lifecycle_controller': idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN')
+            idrac_update_manager_firmware_component: idrac_update_manager_after.json.FirmwareVersion | default('UNKNOWN')
           })
       }}

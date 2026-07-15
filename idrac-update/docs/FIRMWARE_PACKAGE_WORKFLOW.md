@@ -20,6 +20,8 @@ The Dell `iDRAC with Lifecycle Controller` DUP is represented as one canonical c
 
 BIOS, PERC, NIC, disk firmware, CPLD, and other availability-impacting components remain out of scope.
 
+The role support boundary is controlled by the component handler registry in `roles/idrac_update/defaults/main.yml`. The registry defines supported aliases, inventory matching, comparison behavior, execution order, and Redfish restart handling. Adding a row to `examples/firmware_packages.csv` only stages and publishes a package; it does not expand the automated update scope. New automated components require explicit review and a handler entry.
+
 ## Optional Deployment Copy
 
 ```bash

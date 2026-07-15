@@ -1,0 +1,205 @@
+---
+- name: Pre-flight | Initialize component handler registry indexes
+  ansible.builtin.set_fact:
+    idrac_update_supported_component_names: "{{ idrac_update_component_handlers.keys() | list }}"
+    idrac_update_component_alias_entries: []
+    idrac_update_component_alias_map: {}
+    idrac_update_manager_firmware_components: >-
+      {{
+        idrac_update_component_handlers
+        | dict2items
+        | selectattr('value.inventory_match.primary_source', 'equalto', 'manager_firmware_version')
+        | map(attribute='key')
+        | list
+      }}
+
+- name: Pre-flight | Validate manager firmware source handler
+  ansible.builtin.assert:
+    that:
+      - idrac_update_manager_firmware_components | length == 1
+    fail_msg: >-
+      Exactly one component handler must use primary_source=manager_firmware_version.
+      Current handlers: {{ idrac_update_manager_firmware_components }}.
+
+- name: Pre-flight | Set manager firmware source component
+  ansible.builtin.set_fact:
+    idrac_update_manager_firmware_component: "{{ idrac_update_manager_firmware_components | first }}"
+
+- name: Pre-flight | Build component handler alias map
+  ansible.builtin.set_fact:
+    idrac_update_component_alias_entries: >-
+      {{
+        idrac_update_component_alias_entries
+        + [{
+            'alias': idrac_update_component_alias_key,
+            'component': item.0.key
+          }]
+      }}
+    idrac_update_component_alias_map: >-
+      {{ idrac_update_component_alias_map | combine({idrac_update_component_alias_key: item.0.key}) }}
+  loop: "{{ idrac_update_component_handlers | dict2items | subelements('value.aliases') }}"
+  loop_control:
+    label: "{{ item.0.key }} <= {{ item.1 }}"
+  vars:
+    idrac_update_component_alias_key: >-
+      {{
+        item.1
+        | lower
+        | trim
+        | regex_replace('[^a-z0-9]+', '_')
+        | regex_replace('_+', '_')
+        | regex_replace('^_+|_+$', '')
+      }}
+
+- name: Pre-flight | Validate component handler aliases are unambiguous
+  ansible.builtin.assert:
+    that:
+      - alias_components | length == 1
+    fail_msg: >-
+      Ambiguous firmware component alias '{{ item }}' detected in idrac_update_component_handlers.
+      Aliases must resolve to exactly one supported component.
+  loop: "{{ idrac_update_component_alias_entries | map(attribute='alias') | unique | list }}"
+  loop_control:
+    label: "{{ item }}"
+  vars:
+    alias_components: >-
+      {{
+        idrac_update_component_alias_entries
+        | selectattr('alias', 'equalto', item)
+        | map(attribute='component')
+        | unique
+        | list
+      }}
+
+- name: Pre-flight | Validate approved components are supported by registry
+  ansible.builtin.assert:
+    that:
+      - idrac_update_approved_component_key in idrac_update_component_alias_map
+    fail_msg: >-
+      Unsupported approved firmware component '{{ item }}'. Supported components:
+      {{ idrac_update_supported_component_names }}.
+  loop: "{{ idrac_update_approved_components }}"
+  loop_control:
+    label: "{{ item }}"
+  vars:
+    idrac_update_approved_component_key: >-
+      {{
+        item
+        | lower
+        | trim
+        | regex_replace('[^a-z0-9]+', '_')
+        | regex_replace('_+', '_')
+        | regex_replace('^_+|_+$', '')
+      }}
+
+- name: Normalize approved/disallowed component names
+  ansible.builtin.set_fact:
+    idrac_update_approved_component_set: >-
+      {{
+        idrac_update_approved_components
+        | map('lower')
+        | map('trim')
+        | map('regex_replace', '[^a-z0-9]+', '_')
+        | map('regex_replace', '_+', '_')
+        | map('regex_replace', '^_+|_+$', '')
+        | map('extract', idrac_update_component_alias_map)
+        | unique
+        | list
+      }}
+    idrac_update_disallowed_component_set: >-
+      {{
+        idrac_update_disallowed_components
+        | map('lower')
+        | map('regex_replace', '[^a-z0-9]+', '_')
+        | map('regex_replace', '^_+|_+$', '')
+        | list
+      }}
+
+- name: Validate requested update items are supported by registry
+  ansible.builtin.assert:
+    that:
+      - item_name_key in idrac_update_component_alias_map
+    fail_msg: >-
+      Unsupported firmware component '{{ item.name }}'. Supported components:
+      {{ idrac_update_supported_component_names }}.
+  loop: "{{ idrac_update_items }}"
+  loop_control:
+    label: "{{ item.name | default('unknown') }}"
+  vars:
+    item_name_key: >-
+      {{
+        item.name
+        | lower
+        | trim
+        | regex_replace('[^a-z0-9]+', '_')
+        | regex_replace('_+', '_')
+        | regex_replace('^_+|_+$', '')
+      }}
+
+- name: Initialize normalized update items
+  ansible.builtin.set_fact:
+    idrac_update_items_normalized: []
+
+- name: Normalize requested update items
+  ansible.builtin.set_fact:
+    idrac_update_items_normalized: >-
+      {{
+        idrac_update_items_normalized
+        + [(item | combine({
+          'name_normalized': canonical_name,
+          'name_key': item_name_key,
+          'transfer_protocol': item.transfer_protocol | default('HTTP'),
+          'allow_downgrade': item.allow_downgrade | default(false),
+          'force_update': item.force_update | default(false),
+          'install_when_absent': item.install_when_absent | default(handler.install_when_absent_default),
+          'handler': {
+            'comparator': handler.comparator,
+            'installer': handler.installer,
+            'restart_redfish': handler.restart_redfish,
+            'execution_order': handler.execution_order,
+            'primary_source': handler.inventory_match.primary_source,
+            'supports_downgrade': handler.supports_downgrade
+          },
+          'handler_comparator': handler.comparator,
+          'handler_installer': handler.installer,
+          'handler_restart_redfish': handler.restart_redfish,
+          'handler_execution_order': handler.execution_order,
+          'inventory_source': handler.inventory_match.primary_source,
+          'handler_supports_downgrade': handler.supports_downgrade
+        }))]
+      }}
+  loop: "{{ idrac_update_items }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    item_name_key: >-
+      {{
+        item.name
+        | lower
+        | trim
+        | regex_replace('[^a-z0-9]+', '_')
+        | regex_replace('_+', '_')
+        | regex_replace('^_+|_+$', '')
+      }}
+    canonical_name: "{{ idrac_update_component_alias_map[item_name_key] }}"
+    handler: "{{ idrac_update_component_handlers[canonical_name] }}"
+
+- name: Validate requested installer handlers are supported
+  ansible.builtin.assert:
+    that:
+      - item.handler_installer == 'redfish'
+    fail_msg: >-
+      Unsupported installer '{{ item.handler_installer }}' for component '{{ item.name_normalized }}'.
+  loop: "{{ idrac_update_items_normalized }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Validate requested comparator handlers are supported
+  ansible.builtin.assert:
+    that:
+      - item.handler_comparator in ['dotted_numeric', 'uefi_revision']
+    fail_msg: >-
+      Unsupported comparator '{{ item.handler_comparator }}' for component '{{ item.name_normalized }}'.
+  loop: "{{ idrac_update_items_normalized }}"
+  loop_control:
+    label: "{{ item.name }}"

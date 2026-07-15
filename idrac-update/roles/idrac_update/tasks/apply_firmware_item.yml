@@ -44,7 +44,7 @@
     state: stopped
   failed_when: false
   when:
-    - firmware_item.normalized_name == 'idrac_lifecycle_controller'
+    - firmware_item.handler_restart_redfish | bool
     - idrac_update_firmware_item_submitted | bool
 
 - name: Apply item | Wait for full Redfish recovery
@@ -60,7 +60,7 @@
   ansible.builtin.pause:
     seconds: "{{ idrac_update_post_idrac_stabilization_delay }}"
   when:
-    - firmware_item.normalized_name == 'idrac_lifecycle_controller'
+    - firmware_item.handler_restart_redfish | bool
     - idrac_update_firmware_item_submitted | bool
 
 - name: Apply item | Refresh inventory after firmware package
@@ -85,6 +85,11 @@
       component: "{{ firmware_item.normalized_name }}"
       name: "{{ firmware_item.name }}"
       normalized_name: "{{ firmware_item.normalized_name }}"
+      handler_comparator: "{{ firmware_item.handler_comparator }}"
+      handler_installer: "{{ firmware_item.handler_installer }}"
+      handler_restart_redfish: "{{ firmware_item.handler_restart_redfish }}"
+      handler_execution_order: "{{ firmware_item.handler_execution_order }}"
+      inventory_source: "{{ firmware_item.inventory_source }}"
       submitted: "{{ idrac_update_firmware_item_submitted }}"
       job_id: "{{ idrac_update_firmware_item_job_id }}"
       module_changed: "{{ idrac_update_firmware_item_module_changed }}"

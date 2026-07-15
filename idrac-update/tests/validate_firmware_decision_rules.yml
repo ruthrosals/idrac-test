@@ -2,17 +2,13 @@
 - name: Validate iDRAC update firmware decision rules
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - ../roles/idrac_update/defaults/main.yml
   vars:
-    idrac_update_approved_component_set:
-      - idrac_lifecycle_controller
+    expected_execution_order:
       - uefi_diagnostics
       - os_driver_pack
-    idrac_update_disallowed_component_set:
-      - bios
-      - perc
-      - nic
-      - disk_firmware
-      - cpld
+      - idrac_lifecycle_controller
     normalization_cases:
       - input: iDRAC
         expected: idrac_lifecycle_controller
@@ -36,23 +32,6 @@
         expected: os_driver_pack
       - input: Drivers for OS Deployment
         expected: os_driver_pack
-      - input: BIOS
-        expected: bios
-    idrac_update_component_order:
-      - uefi_diagnostics
-      - os_driver_pack
-      - idrac_lifecycle_controller
-    sequencing_input:
-      - normalized_name: idrac_lifecycle_controller
-        should_install: true
-      - normalized_name: os_driver_pack
-        should_install: true
-      - normalized_name: uefi_diagnostics
-        should_install: true
-    expected_execution_order:
-      - uefi_diagnostics
-      - os_driver_pack
-      - idrac_lifecycle_controller
     decision_cases:
       - name: idrac_upgrade
         component: idrac_lifecycle_controller
@@ -116,6 +95,26 @@
         expected_relation: older
         expected_action: upgrade_required
         expected_should_install: true
+      - name: uefi_diagnostics_future_a73_to_a74
+        component: uefi_diagnostics
+        current_version: 4301A73
+        expected_installed_version: 4301A74
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: older
+        expected_action: upgrade_required
+        expected_should_install: true
+      - name: uefi_diagnostics_future_a99_to_4302a01
+        component: uefi_diagnostics
+        current_version: 4301A99
+        expected_installed_version: 4302A01
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: older
+        expected_action: upgrade_required
+        expected_should_install: true
       - name: uefi_diagnostics_compliant
         component: uefi_diagnostics
         current_version: 4301A73
@@ -158,6 +157,16 @@
         expected_relation: older
         expected_action: upgrade_required
         expected_should_install: true
+      - name: future_dotted_numeric_upgrade
+        component: os_driver_pack
+        current_version: 24.01.04
+        expected_installed_version: 25.02.01
+        component_present: true
+        allow_downgrade: false
+        force_update: false
+        expected_relation: older
+        expected_action: upgrade_required
+        expected_should_install: true
       - name: unknown_unparseable_version
         component: idrac_lifecycle_controller
         current_version: custom-build
@@ -169,18 +178,59 @@
         expected_action: version_mismatch
         expected_should_install: false
   tasks:
-    - name: Validate canonical component normalization cases
+    - name: Initialize registry alias map
+      ansible.builtin.set_fact:
+        component_alias_map: {}
+        component_alias_entries: []
+
+    - name: Build registry alias map
+      ansible.builtin.set_fact:
+        component_alias_entries: >-
+          {{ component_alias_entries + [{'alias': alias_key, 'component': item.0.key}] }}
+        component_alias_map: "{{ component_alias_map | combine({alias_key: item.0.key}) }}"
+      loop: "{{ idrac_update_component_handlers | dict2items | subelements('value.aliases') }}"
+      loop_control:
+        label: "{{ item.0.key }} <= {{ item.1 }}"
+      vars:
+        alias_key: >-
+          {{
+            item.1
+            | lower
+            | trim
+            | regex_replace('[^a-z0-9]+', '_')
+            | regex_replace('_+', '_')
+            | regex_replace('^_+|_+$', '')
+          }}
+
+    - name: Validate registry aliases are unambiguous
       ansible.builtin.assert:
         that:
-          - actual | trim == item.expected
+          - alias_components | length == 1
+      loop: "{{ component_alias_entries | map(attribute='alias') | unique | list }}"
+      loop_control:
+        label: "{{ item }}"
+      vars:
+        alias_components: >-
+          {{
+            component_alias_entries
+            | selectattr('alias', 'equalto', item)
+            | map(attribute='component')
+            | unique
+            | list
+          }}
+
+    - name: Validate supported aliases resolve through registry
+      ansible.builtin.assert:
+        that:
+          - component_alias_map[alias_key] == item.expected
         fail_msg: >-
-          Normalization failed for {{ item.input }}.
-          Expected={{ item.expected }}, actual={{ actual }}.
+          Registry normalization failed for {{ item.input }}.
+          Expected={{ item.expected }}, actual={{ component_alias_map[alias_key] | default('unsupported') }}.
       loop: "{{ normalization_cases }}"
       loop_control:
         label: "{{ item.input }}"
       vars:
-        key: >-
+        alias_key: >-
           {{
             item.input
             | lower
@@ -189,39 +239,53 @@
             | regex_replace('_+', '_')
             | regex_replace('^_+|_+$', '')
           }}
-        actual: >-
+
+    - name: Validate unsupported aliases are rejected by registry
+      ansible.builtin.assert:
+        that:
+          - unsupported_alias_key not in component_alias_map
+        fail_msg: "Unsupported alias unexpectedly resolved through registry."
+      vars:
+        unsupported_alias_key: bios
+
+    - name: Validate approved components exist in registry
+      ansible.builtin.assert:
+        that:
+          - approved_key in component_alias_map
+        fail_msg: "Approved component {{ item }} is not supported by the registry."
+      loop: "{{ idrac_update_approved_components }}"
+      vars:
+        approved_key: >-
           {{
-            'idrac_lifecycle_controller'
-            if key in [
-              'idrac',
-              'integrated_dell_remote_access_controller',
-              'lifecycle_controller',
-              'idrac_with_lifecycle_controller',
-              'idrac_lifecycle_controller'
-            ]
-            else 'uefi_diagnostics'
-            if key in [
-              'diagnostics',
-              'uefi_diagnostics',
-              'dell_64_bit_uefi_diagnostics',
-              '64_bit_uefi_diagnostics'
-            ]
-            else 'os_driver_pack'
-            if key in [
-              'os_driver_pack',
-              'dell_os_driver_pack',
-              'drivers_for_os_deployment'
-            ]
-            else 'disk_firmware'
-            if 'disk' in key
-            else 'cpld'
-            if key == 'cpld' or key == 'system_cpld'
-            else 'perc'
-            if 'perc' in key
-            else 'nic'
-            if key == 'nic' or 'ethernet' in key or 'network' in key
-            else key
+            item
+            | lower
+            | trim
+            | regex_replace('[^a-z0-9]+', '_')
+            | regex_replace('_+', '_')
+            | regex_replace('^_+|_+$', '')
           }}
+
+    - name: Validate handler behavior metadata
+      ansible.builtin.assert:
+        that:
+          - idrac_update_component_handlers.idrac_lifecycle_controller.restart_redfish | bool
+          - not idrac_update_component_handlers.uefi_diagnostics.restart_redfish | bool
+          - not idrac_update_component_handlers.os_driver_pack.restart_redfish | bool
+          - idrac_update_component_handlers.idrac_lifecycle_controller.installer == 'redfish'
+          - idrac_update_component_handlers.uefi_diagnostics.installer == 'redfish'
+          - idrac_update_component_handlers.os_driver_pack.installer == 'redfish'
+          - idrac_update_component_handlers.idrac_lifecycle_controller.comparator == 'dotted_numeric'
+          - idrac_update_component_handlers.uefi_diagnostics.comparator == 'uefi_revision'
+          - idrac_update_component_handlers.os_driver_pack.comparator == 'dotted_numeric'
+
+    - name: Validate unknown handler values fail support checks
+      ansible.builtin.assert:
+        that:
+          - unknown_comparator not in ['dotted_numeric', 'uefi_revision']
+          - unknown_installer != 'redfish'
+      vars:
+        unknown_comparator: made_up_comparator
+        unknown_installer: made_up_installer
 
     - name: Validate duplicate canonical component rejection rule
       ansible.builtin.assert:
@@ -243,11 +307,11 @@
           - cpld_disallowed | bool
         fail_msg: "Disallowed component rejection rule failed."
       vars:
-        bios_disallowed: "{{ 'bios' in idrac_update_disallowed_component_set }}"
-        perc_disallowed: "{{ 'perc' in idrac_update_disallowed_component_set }}"
-        nic_disallowed: "{{ 'nic' in idrac_update_disallowed_component_set }}"
-        disk_disallowed: "{{ 'disk_firmware' in idrac_update_disallowed_component_set }}"
-        cpld_disallowed: "{{ 'cpld' in idrac_update_disallowed_component_set }}"
+        bios_disallowed: "{{ 'bios' in idrac_update_disallowed_components }}"
+        perc_disallowed: "{{ 'perc' in idrac_update_disallowed_components }}"
+        nic_disallowed: "{{ 'nic' in idrac_update_disallowed_components }}"
+        disk_disallowed: "{{ 'disk_firmware' in idrac_update_disallowed_components }}"
+        cpld_disallowed: "{{ 'cpld' in idrac_update_disallowed_components }}"
 
     - name: Validate firmware decision cases
       ansible.builtin.assert:
@@ -265,28 +329,29 @@
         label: "{{ item.name }}"
       vars:
         component: "{{ item.component }}"
+        handler: "{{ idrac_update_component_handlers[component] }}"
         current_version: "{{ item.current_version }}"
         expected_version: "{{ item.expected_installed_version }}"
-        approved: "{{ component in idrac_update_approved_component_set }}"
-        excluded: "{{ component in idrac_update_disallowed_component_set }}"
+        approved: "{{ component in idrac_update_approved_components }}"
+        excluded: "{{ component in idrac_update_disallowed_components }}"
         current_numeric_supported: >-
           {{
-            component in ['idrac_lifecycle_controller', 'os_driver_pack']
+            handler.comparator == 'dotted_numeric'
             and current_version is match('^[0-9]+(\.[0-9]+)+$')
           }}
         expected_numeric_supported: >-
           {{
-            component in ['idrac_lifecycle_controller', 'os_driver_pack']
+            handler.comparator == 'dotted_numeric'
             and expected_version is match('^[0-9]+(\.[0-9]+)+$')
           }}
         current_uefi_supported: >-
           {{
-            component == 'uefi_diagnostics'
+            handler.comparator == 'uefi_revision'
             and current_version is match('^[0-9]+[A-Za-z][0-9]+$')
           }}
         expected_uefi_supported: >-
           {{
-            component == 'uefi_diagnostics'
+            handler.comparator == 'uefi_revision'
             and expected_version is match('^[0-9]+[A-Za-z][0-9]+$')
           }}
         version_comparison_supported: >-
@@ -317,9 +382,9 @@
             else []
           }}
         comparison_current_parts: >-
-          {{ current_uefi_parts if component == 'uefi_diagnostics' else current_numeric_parts }}
+          {{ current_uefi_parts if handler.comparator == 'uefi_revision' else current_numeric_parts }}
         comparison_expected_parts: >-
-          {{ expected_uefi_parts if component == 'uefi_diagnostics' else expected_numeric_parts }}
+          {{ expected_uefi_parts if handler.comparator == 'uefi_revision' else expected_numeric_parts }}
         version_relation: >-
           {% if current_version == expected_version %}equal
           {% elif not item.component_present | bool or current_version == 'UNKNOWN' %}unknown
@@ -329,8 +394,8 @@
           {% else %}equal
           {% endif %}
         firmware_action: >-
-          {% if component in idrac_update_disallowed_component_set %}excluded
-          {% elif component not in idrac_update_approved_component_set %}excluded
+          {% if component in idrac_update_disallowed_components %}excluded
+          {% elif component not in idrac_update_approved_components %}excluded
           {% elif not item.component_present | bool %}not_applicable
           {% elif item.force_update | bool %}forced_update
           {% elif current_version == 'UNKNOWN' %}unknown
@@ -342,8 +407,8 @@
           {% endif %}
         should_install: >-
           {{
-            component in idrac_update_approved_component_set
-            and component not in idrac_update_disallowed_component_set
+            component in idrac_update_approved_components
+            and component not in idrac_update_disallowed_components
             and item.component_present | bool
             and (
               (
@@ -362,7 +427,6 @@
             )
           }}
 
-
     - name: Validate firmware execution ordering
       ansible.builtin.assert:
         that:
@@ -374,8 +438,10 @@
       vars:
         ordered_items: >-
           {{
-            (sequencing_input | selectattr('normalized_name', 'equalto', 'uefi_diagnostics') | list)
-            + (sequencing_input | selectattr('normalized_name', 'equalto', 'os_driver_pack') | list)
-            + (sequencing_input | selectattr('normalized_name', 'equalto', 'idrac_lifecycle_controller') | list)
+            idrac_update_component_handlers
+            | dict2items
+            | sort(attribute='value.execution_order')
+            | map(attribute='key')
+            | list
           }}
-        actual_execution_order: "{{ ordered_items | map(attribute='normalized_name') | list }}"
+        actual_execution_order: "{{ ordered_items }}"

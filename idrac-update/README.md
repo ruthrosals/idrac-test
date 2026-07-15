@@ -21,6 +21,12 @@ The Dell `iDRAC with Lifecycle Controller` DUP is managed as one canonical compo
 
 BIOS, PERC, NIC, disk firmware, CPLD, and other availability-impacting components are out of scope. If an operator submits one of those components in apply mode, the role fails before calling `redfish_firmware`.
 
+## Component Handler Registry
+
+Supported automated components are defined by `idrac_update_component_handlers` in `roles/idrac_update/defaults/main.yml`. This registry is the authoritative source for component aliases, version comparison method, inventory matching, execution order, installer type, and whether Redfish restart recovery is required.
+
+Adding a firmware package to the CSV or Semaphore variable group does not make it supported. New automated components require explicit review and a handler entry. The current automated scope remains intentionally limited to `idrac_lifecycle_controller`, `uefi_diagnostics`, and `os_driver_pack`.
+
 ## Firmware Package Onboarding
 
 Use `examples/firmware_packages.csv` as the package onboarding template. Operators should copy or edit this file with the approved Dell DUP packages for the maintenance window.
