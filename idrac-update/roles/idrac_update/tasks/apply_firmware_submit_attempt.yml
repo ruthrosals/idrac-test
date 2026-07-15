@@ -142,34 +142,34 @@
     - not idrac_update_firmware_item_submitted | bool
     - not idrac_update_firmware_item_verified | bool
 
-- name: Apply item | Fail on non-transient firmware submission errors
+- name: Apply item | Classify firmware submission result
+  ansible.builtin.set_fact:
+    idrac_update_submit_error_text: >-
+      {{ idrac_update_firmware_submit_result | default({}) | to_json | lower }}
+    idrac_update_submit_error_is_red023: >-
+      {{ 'red023' in (idrac_update_firmware_submit_result | default({}) | to_json | lower) }}
+  when:
+    - idrac_update_firmware_submit_result is defined
+    - idrac_update_firmware_submit_result.skipped is not defined
+
+- name: Apply item | Fail on non-RED023 firmware submission errors
   ansible.builtin.fail:
     msg: >-
-      Firmware submission failed with a non-transient error for {{ firmware_item.name }}
-      on {{ inventory_hostname }}: {{ idrac_update_firmware_submit_result.msg | default('unknown error') }}
-  vars:
-    idrac_update_submit_error_text: "{{ idrac_update_firmware_submit_result.msg | default('') | lower }}"
-    idrac_update_submit_error_is_transient: >-
-      {{
-        'jsondecodeerror' in idrac_update_submit_error_text
-        or 'no start of json char' in idrac_update_submit_error_text
-        or 'expecting value' in idrac_update_submit_error_text
-        or 'empty response' in idrac_update_submit_error_text
-        or 'http 503' in idrac_update_submit_error_text
-        or '503' in idrac_update_submit_error_text
-        or 'connection reset' in idrac_update_submit_error_text
-        or 'connection refused' in idrac_update_submit_error_text
-        or 'timed out' in idrac_update_submit_error_text
-        or 'timeout' in idrac_update_submit_error_text
-      }}
+      Firmware submission failed for {{ firmware_item.name }} on {{ inventory_hostname }}:
+      {{ idrac_update_firmware_submit_result.msg | default('unknown error') }}
   when:
     - idrac_update_firmware_submit_result is defined
     - idrac_update_firmware_submit_result is failed
-    - not idrac_update_submit_error_is_transient | bool
+    - not idrac_update_submit_error_is_red023 | default(false) | bool
 
 - name: Apply item | Record submit attempt outcome
   ansible.builtin.set_fact:
     idrac_update_firmware_item_attempts: "{{ idrac_update_firmware_item_attempts | int + 1 }}"
+    idrac_update_firmware_item_lc_busy_count: >-
+      {{
+        idrac_update_firmware_item_lc_busy_count | int
+        + (1 if idrac_update_submit_error_is_red023 | default(false) | bool else 0)
+      }}
     idrac_update_firmware_item_submitted: >-
       {{
         idrac_update_firmware_item_submitted | bool
@@ -187,20 +187,84 @@
         | default(idrac_update_firmware_submit_result.task.uri
         | default(idrac_update_firmware_item_job_id | default(''))))
       }}
+    idrac_update_firmware_item_status: >-
+      {{
+        'submitted'
+        if idrac_update_firmware_submit_result is succeeded
+        else (
+          'waiting_for_lifecycle_controller'
+          if idrac_update_submit_error_is_red023 | default(false) | bool
+          else 'firmware_submission_failed'
+        )
+      }}
     idrac_update_firmware_item_error: >-
       {{
         ''
         if idrac_update_firmware_submit_result is succeeded
-        else idrac_update_firmware_submit_result.msg | default('Firmware submit failed')
+        else (
+          'waiting_for_lifecycle_controller'
+          if idrac_update_submit_error_is_red023 | default(false) | bool
+          else idrac_update_firmware_submit_result.msg | default('Firmware submit failed')
+        )
       }}
   when:
     - idrac_update_firmware_submit_result is defined
     - idrac_update_firmware_submit_result.skipped is not defined
 
-- name: Apply item | Pause before next transient retry
-  ansible.builtin.pause:
-    seconds: "{{ idrac_update_firmware_submit_retry_delay }}"
+- name: Apply item | Fail after Lifecycle Controller busy timeout
+  ansible.builtin.fail:
+    msg: >-
+      Timed out waiting for Lifecycle Controller availability on {{ inventory_hostname }}
+      after {{ idrac_update_firmware_item_lc_busy_count }} RED023 retries for {{ firmware_item.name }}.
   when:
+    - idrac_update_submit_error_is_red023 | default(false) | bool
     - not idrac_update_firmware_item_submitted | bool
     - not idrac_update_firmware_item_verified | bool
-    - idrac_update_firmware_item_attempts | int < idrac_update_firmware_submit_retries | int
+    - idrac_update_firmware_item_lc_busy_count | int >= idrac_update_lifecycle_controller_busy_retries | int
+
+- name: Apply item | Wait before retrying RED023 Lifecycle Controller busy state
+  ansible.builtin.pause:
+    seconds: "{{ idrac_update_lifecycle_controller_busy_retry_delay }}"
+  when:
+    - idrac_update_submit_error_is_red023 | default(false) | bool
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+    - idrac_update_firmware_item_lc_busy_count | int < idrac_update_lifecycle_controller_busy_retries | int
+
+- name: Apply item | Poll iDRAC Manager availability after RED023
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/Managers/iDRAC.Embedded.1"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_red023_manager_poll
+  failed_when: false
+  no_log: "{{ idrac_update_no_log }}"
+  when:
+    - idrac_update_submit_error_is_red023 | default(false) | bool
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+    - idrac_update_firmware_item_lc_busy_count | int < idrac_update_lifecycle_controller_busy_retries | int
+
+- name: Apply item | Poll Lifecycle Controller availability after RED023
+  ansible.builtin.uri:
+    url: "https://{{ idrac_ip }}:{{ idrac_update_port }}/redfish/v1/UpdateService"
+    method: GET
+    url_username: "{{ idrac_update_user }}"
+    url_password: "{{ idrac_update_password }}"
+    force_basic_auth: "{{ idrac_update_force_basic_auth }}"
+    validate_certs: "{{ idrac_update_validate_certs }}"
+    status_code: 200
+    timeout: 30
+  register: idrac_update_red023_update_service_poll
+  failed_when: false
+  no_log: "{{ idrac_update_no_log }}"
+  when:
+    - idrac_update_submit_error_is_red023 | default(false) | bool
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+    - idrac_update_firmware_item_lc_busy_count | int < idrac_update_lifecycle_controller_busy_retries | int

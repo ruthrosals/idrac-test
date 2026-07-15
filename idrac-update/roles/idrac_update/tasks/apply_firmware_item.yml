@@ -6,6 +6,8 @@
     idrac_update_firmware_item_module_changed: false
     idrac_update_firmware_item_job_id: ""
     idrac_update_firmware_item_error: ""
+    idrac_update_firmware_item_status: "pending"
+    idrac_update_firmware_item_lc_busy_count: 0
     idrac_update_firmware_item_verified: false
     idrac_update_firmware_item_final_version: "{{ firmware_item.current_version }}"
     idrac_update_firmware_item_redfish_recovered: false
@@ -18,10 +20,56 @@
 
 - name: Apply item | Submit firmware with readiness checks between attempts
   ansible.builtin.include_tasks: apply_firmware_submit_attempt.yml
-  loop: "{{ range(0, idrac_update_firmware_submit_retries | int) | list }}"
+  loop: >-
+    {{
+      range(
+        0,
+        [
+          idrac_update_firmware_submit_retries | int,
+          idrac_update_lifecycle_controller_busy_retries | int
+        ] | max
+      ) | list
+    }}
   loop_control:
     loop_var: idrac_update_firmware_submit_attempt_index
     label: "attempt {{ idrac_update_firmware_submit_attempt_index | int + 1 }}"
+  when:
+    - not idrac_update_firmware_item_submitted | bool
+    - not idrac_update_firmware_item_verified | bool
+
+- name: Apply item | Append failed install result after submission timeout
+  ansible.builtin.set_fact:
+    idrac_update_install_results: "{{ idrac_update_install_results + [idrac_update_install_result_item] }}"
+  vars:
+    idrac_update_install_result_item:
+      host: "{{ inventory_hostname }}"
+      component: "{{ firmware_item.normalized_name }}"
+      name: "{{ firmware_item.name }}"
+      normalized_name: "{{ firmware_item.normalized_name }}"
+      handler_comparator: "{{ firmware_item.handler_comparator }}"
+      handler_installer: "{{ firmware_item.handler_installer }}"
+      handler_restart_redfish: "{{ firmware_item.handler_restart_redfish }}"
+      handler_execution_order: "{{ firmware_item.handler_execution_order }}"
+      inventory_source: "{{ firmware_item.inventory_source }}"
+      submitted: false
+      job_id: "{{ idrac_update_firmware_item_job_id }}"
+      module_changed: "{{ idrac_update_firmware_item_module_changed }}"
+      before_version: "{{ firmware_item.current_version }}"
+      expected_installed_version: "{{ firmware_item.expected_installed_version }}"
+      expected_version: "{{ firmware_item.expected_installed_version }}"
+      final_version: "{{ idrac_update_firmware_item_final_version }}"
+      redfish_recovered: "{{ idrac_update_firmware_item_redfish_recovered }}"
+      verification_passed: false
+      attempts: "{{ idrac_update_firmware_item_attempts }}"
+      lifecycle_controller_busy_retries: "{{ idrac_update_firmware_item_lc_busy_count }}"
+      status: "{{ idrac_update_firmware_item_status }}"
+      error: "{{ idrac_update_firmware_item_error }}"
+      action: "{{ idrac_update_firmware_item_status }}"
+      applicability: "{{ firmware_item.applicability }}"
+      allow_downgrade: "{{ firmware_item.allow_downgrade }}"
+      redfish_task_id: "{{ idrac_update_firmware_item_job_id }}"
+      changed: "{{ idrac_update_firmware_item_module_changed }}"
+      skipped: false
   when:
     - not idrac_update_firmware_item_submitted | bool
     - not idrac_update_firmware_item_verified | bool
@@ -31,6 +79,7 @@
     msg: >-
       Firmware package failed before submission completed on {{ inventory_hostname }}.
       component={{ firmware_item.name }} attempts={{ idrac_update_firmware_item_attempts }}
+      status={{ idrac_update_firmware_item_status }}
       error={{ idrac_update_firmware_item_error }}.
   when:
     - not idrac_update_firmware_item_submitted | bool
@@ -100,6 +149,7 @@
       redfish_recovered: "{{ idrac_update_firmware_item_redfish_recovered }}"
       verification_passed: "{{ idrac_update_firmware_item_verified }}"
       attempts: "{{ idrac_update_firmware_item_attempts }}"
+      lifecycle_controller_busy_retries: "{{ idrac_update_firmware_item_lc_busy_count }}"
       status: "{{ 'installed' if idrac_update_firmware_item_verified | bool else 'verification_failed' }}"
       error: "{{ '' if idrac_update_firmware_item_verified | bool else idrac_update_firmware_item_error }}"
       action: installed
