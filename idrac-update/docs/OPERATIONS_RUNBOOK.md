@@ -9,6 +9,8 @@ This runbook covers day-to-day operation of the iDRAC update toolkit in CLI and 
 
 BIOS, PERC, NIC, disk firmware, CPLD, and host-impacting firmware remain out of scope for this automation.
 
+The host operating system is not rebooted by this automation, but iDRAC management services temporarily restart during an `idrac_lifecycle_controller` update.
+
 OS Collector is supported as `os_collector` and uses dotted numeric version comparison, for example `5.0` to `6.0`. It is intentionally distinct from UEFI Diagnostics and OS Driver Pack.
 
 ## Tested Runtime Baseline
@@ -18,7 +20,7 @@ The current lab-tested baseline is:
 - Ansible: `core 2.17.13`
 - Python: `3.10.0`
 - `dellemc.openmanage`: `10.0.2` from the user collection path
-- Repository dependency pin: `requirements.yml` pins `dellemc.openmanage` to `10.0.2`
+- Repository dependency pin: `playbooks/requirements.yml` pins `dellemc.openmanage` to `10.0.2`
 - Semaphore image: use the production Semaphore image that includes Ansible, AWS CLI for optional Wasabi upload, and access to `/var/tmp/idrac-update-reports`
 - Supported iDRAC generation: iDRAC9 with Redfish Manager and UpdateService endpoints
 - Supported firmware automation scope: low-risk application/management packages only
@@ -48,6 +50,19 @@ Recommended review items:
 - `readiness_reason`
 
 Firmware URL validation runs in both check and apply modes. In check mode, an unreachable package URL is reported as `deployment_ready: false` with `readiness_reason: firmware_image_unreachable`, but the play continues so drift and readiness can be reviewed for every host and item. In apply mode, an unreachable package URL fails before any firmware job is submitted.
+
+
+Production Semaphore variable baseline:
+
+```json
+{
+  "idrac_update_mode": "check",
+  "idrac_update_serial": 1,
+  "idrac_update_no_log": true
+}
+```
+
+`idrac_update_no_log=false` is troubleshooting-only and must not remain in shared production templates.
 
 For `idrac_lifecycle_controller`, the firmware package must be served from the `lifecycle_controller` repository folder:
 
@@ -84,9 +99,9 @@ The role runs packages sequentially per host. Fleet concurrency is controlled by
 idrac_update_serial: "25%"
 ```
 
-Recommended production starting value: `25%`.
+Initial production deployments must use `idrac_update_serial: 1`. After the workflow has been proven in the target environment, production concurrency can be increased only through an approved change.
 
-For eight hosts, `25%` runs two hosts at a time. For high-risk environments, keep `idrac_update_serial: 1`.
+`67%` is a lab-only batch setting used to prove serial behavior with three demo hosts. Do not use `67%` in shared production templates. Percentage values such as `25%` are for later controlled rollout only; for eight hosts, `25%` runs two hosts at a time.
 
 ## Report Locations
 
@@ -233,3 +248,25 @@ Escalate when any of these occur:
 - The same host repeatedly reports active firmware jobs that never complete.
 
 Do not use automatic rollback. Rollback decisions require operator review and an approved maintenance plan.
+
+
+## Release Validation Checklist
+
+Before release or production promotion, confirm:
+
+- all Python tests pass
+- decision-rule test passes
+- Redfish job classification test passes
+- Ansible syntax checks pass
+- ansible-lint passes
+- `playbooks/requirements.yml` is detected by Semaphore
+- check mode succeeds
+- single-host apply succeeds
+- three-host `serial=1` apply succeeds
+- second check-mode run is compliant
+- no duplicate Dell jobs are created
+- SEL critical delta is zero
+- Wasabi latest snapshot is complete
+- Wasabi archive retention keeps three runs
+- `idrac_update_no_log=true` in shared production templates
+- credentials are supplied by the Semaphore/1Password integration

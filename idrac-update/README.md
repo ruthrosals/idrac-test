@@ -1,6 +1,6 @@
 # iDRAC Update Toolkit
 
-This directory contains the iDRAC firmware update role, discovery playbook, report integration, and operator helper scripts.
+This directory contains the Dell low-risk firmware/application update role, discovery playbook, report integration, and operator helper scripts.
 
 ## Documentation
 
@@ -23,7 +23,7 @@ The Dell `iDRAC with Lifecycle Controller` DUP is managed as one canonical compo
 
 Dell OS Collector is managed as a distinct canonical component: `os_collector`. It is not normalized as UEFI Diagnostics, generic diagnostics, or OS Driver Pack. OS Collector uses dotted numeric version comparison and the repository folder `os_collector`.
 
-BIOS, PERC, NIC, disk firmware, CPLD, and other availability-impacting components are out of scope. If an operator submits one of those components in apply mode, the role fails before calling `redfish_firmware`.
+BIOS, PERC, NIC, disk firmware, CPLD, and other availability-impacting components are out of scope. The host operating system is not rebooted by this automation, but iDRAC management services temporarily restart during an `idrac_lifecycle_controller` update. If an operator submits one of those components in apply mode, the role fails before calling `redfish_firmware`.
 
 ## Component Handler Registry
 
@@ -73,6 +73,20 @@ scripts/add_firmware_packages_from_csv.sh examples/firmware_packages.csv
 
 The helper copies approved Dell firmware packages into the Nginx firmware repository, validates the HTTP URLs, syncs the repository to Wasabi, verifies uploaded objects, and prints the `idrac_update_items` JSON block for Semaphore.
 
+## Production Defaults
+
+Use conservative production defaults for shared Semaphore templates:
+
+```json
+{
+  "idrac_update_mode": "check",
+  "idrac_update_serial": 1,
+  "idrac_update_no_log": true
+}
+```
+
+`67%` is a lab-only batch setting. Initial production deployments must use `idrac_update_serial: 1`. Use `idrac_update_no_log=false` only for temporary troubleshooting from a trusted terminal, and never leave it in shared production templates.
+
 ## Apply Sequencing
 
 Redfish firmware updates are submitted one package at a time. The role builds an effective execution order independent of the Semaphore variable order:
@@ -97,9 +111,9 @@ The same package set may be sent to mixed server inventories.
 
 Generated reports are written to `/var/tmp/idrac-update-reports` and may optionally be uploaded to Wasabi. Firmware packages remain served to iDRAC through Nginx.
 
-`requirements.yml` remains at the repository root.
+`playbooks/requirements.yml` is the authoritative Ansible collection requirements file because Semaphore discovers requirements next to the template playbooks.
 
 
 ## Tested Versions
 
-The current lab-tested dependency baseline is documented in `docs/OPERATIONS_RUNBOOK.md`. The repository pins `dellemc.openmanage` in `requirements.yml`; rerun the validation suite after changing Ansible, Python, the collection version, or the Semaphore image.
+The current lab-tested dependency baseline is documented in `docs/OPERATIONS_RUNBOOK.md`. The repository pins `dellemc.openmanage` in `playbooks/requirements.yml`; rerun the validation suite after changing Ansible, Python, the collection version, or the Semaphore image.

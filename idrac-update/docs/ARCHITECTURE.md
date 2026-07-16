@@ -7,14 +7,14 @@ The iDRAC update toolkit is designed for repeatable CLI and Semaphore execution 
 ```text
 idrac-update/
 ├── playbooks/
+│   └── requirements.yml
 ├── roles/
 ├── scripts/
 ├── examples/
-├── docs/
-└── requirements.yml
+└── docs/
 ```
 
-`requirements.yml` remains at the `idrac-update/` root so Ansible collections can be installed from the project root without changing paths.
+`playbooks/requirements.yml` is the authoritative Ansible collection requirements file. It is intentionally next to the playbooks so Semaphore discovers and installs the pinned collection when the template playbook path is `idrac-update/playbooks/idrac_update.yml`.
 
 ## Execution Model
 

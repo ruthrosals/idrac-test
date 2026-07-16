@@ -1,7 +1,7 @@
 ---
-# iDRAC Firmware Update Role
+# iDRAC Low-Risk Firmware Update Role
 
-Updates Dell iDRAC firmware and related components using Redfish API.
+Updates the explicitly supported low-risk Dell firmware/application components using the Redfish API.
 
 ## Features
 
@@ -14,7 +14,7 @@ Updates Dell iDRAC firmware and related components using Redfish API.
 
 ## Requirements
 
-- `dellemc.openmanage` collection version 10.0.2 (install via `ansible-galaxy collection install -r ../requirements.yml`)
+- `dellemc.openmanage` collection version 10.0.2 (install via `ansible-galaxy collection install -r playbooks/requirements.yml` from the project root)
 - Network access to iDRAC Redfish endpoints (port 443)
 - Environment variables: `IDRAC_USERNAME`, `IDRAC_PASSWORD`
 
@@ -35,7 +35,7 @@ See [defaults/main.yml](defaults/main.yml) for all configurable defaults.
 ## Usage
 
 ```bash
-ansible-galaxy collection install -r ../requirements.yml
+ansible-galaxy collection install -r playbooks/requirements.yml
 
 # Check mode (no changes)
 ansible-playbook -i inventory/idrac_lab.ini playbooks/idrac_update.yml
@@ -80,11 +80,11 @@ IDRAC_USERNAME=user IDRAC_PASSWORD=pass ansible-playbook \
   playbooks/idrac_update.yml \
   -e "idrac_update_mode=apply idrac_update_serial=1"
 
-# Apply updates to 25% of the inventory at a time
+# Lab only: apply updates to 67% of a three-host demo inventory
 IDRAC_USERNAME=user IDRAC_PASSWORD=pass ansible-playbook \
   -i inventory/idrac_lab.ini \
   playbooks/idrac_update.yml \
-  -e "idrac_update_mode=apply idrac_update_serial=25%"
+  -e "idrac_update_mode=apply idrac_update_serial=67%"
 
 # Apply updates to two servers at a time
 IDRAC_USERNAME=user IDRAC_PASSWORD=pass ansible-playbook \
@@ -94,22 +94,26 @@ IDRAC_USERNAME=user IDRAC_PASSWORD=pass ansible-playbook \
 ```
 
 For Semaphore, define `idrac_update_serial` in the task/template extra
-variables. Example values:
+variables. Production templates should start in check mode and serial 1:
 
 ```yaml
-idrac_update_mode: apply
-idrac_update_serial: 25%
+idrac_update_mode: check
+idrac_update_serial: 1
+idrac_update_no_log: true
 ```
+
+`67%` is lab-only for three-host serial behavior testing. `idrac_update_no_log=false` is troubleshooting-only and must not remain in shared production templates.
 
 ### Firmware Apply Sequencing
 
 Apply mode processes firmware packages strictly one at a time. The role orders installable components as:
 
 1. `uefi_diagnostics`
-2. `os_driver_pack`
-3. `idrac_lifecycle_controller`
+2. `os_collector`
+3. `os_driver_pack`
+4. `idrac_lifecycle_controller`
 
-This avoids submitting another package while iDRAC/Redfish services are recovering. The `idrac_lifecycle_controller` update is always last because it can restart management services. Before moving to the next package, the role waits for TCP 443, authenticated `/redfish/v1/Managers/iDRAC.Embedded.1` JSON, authenticated `/redfish/v1/UpdateService` JSON, refreshed inventory, and expected-version verification.
+The host operating system is not rebooted by this automation, but iDRAC management services temporarily restart during an `idrac_lifecycle_controller` update. This avoids submitting another package while iDRAC/Redfish services are recovering. The `idrac_lifecycle_controller` update is always last because it can restart management services. Before moving to the next package, the role waits for TCP 443, authenticated `/redfish/v1/Managers/iDRAC.Embedded.1` JSON, authenticated `/redfish/v1/UpdateService` JSON, refreshed inventory, and expected-version verification.
 
 ### Troubleshooting Hidden Firmware Module Errors
 
