@@ -195,7 +195,7 @@ Confirm the generated JSON from `/tmp/idrac_update_items_generated.json` is past
 
 ## Retention Guidance
 
-Keep the current approved firmware plus the previous three approved versions. Keep additional versions when they are still referenced by lab, staging, production, or rollback procedures.
+Keep the current approved firmware plus the previous three approved versions. Keep additional versions when they are still referenced by development, qa, production, or rollback procedures.
 
 ## Notes
 

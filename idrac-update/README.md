@@ -85,7 +85,7 @@ Use conservative production defaults for shared Semaphore templates:
 }
 ```
 
-`67%` is a lab-only batch setting. Initial production deployments must use `idrac_update_serial: 1`. Use `idrac_update_no_log=false` only for temporary troubleshooting from a trusted terminal, and never leave it in shared production templates.
+`67%` is a development-only batch setting. Initial production deployments must use `idrac_update_serial: 1`. Use `idrac_update_no_log=false` only for temporary troubleshooting from a trusted terminal, and never leave it in shared production templates.
 
 ## Apply Sequencing
 
@@ -116,4 +116,4 @@ Generated reports are written to `/var/tmp/idrac-update-reports` and may optiona
 
 ## Tested Versions
 
-The current lab-tested dependency baseline is documented in `docs/OPERATIONS_RUNBOOK.md`. The repository pins `dellemc.openmanage` in `playbooks/requirements.yml`; rerun the validation suite after changing Ansible, Python, the collection version, or the Semaphore image.
+The current development-tested dependency baseline is documented in `docs/OPERATIONS_RUNBOOK.md`. The repository pins `dellemc.openmanage` in `playbooks/requirements.yml`; rerun the validation suite after changing Ansible, Python, the collection version, or the Semaphore image.

@@ -80,7 +80,7 @@ IDRAC_USERNAME=user IDRAC_PASSWORD=pass ansible-playbook \
   playbooks/idrac_update.yml \
   -e "idrac_update_mode=apply idrac_update_serial=1"
 
-# Lab only: apply updates to 67% of a three-host demo inventory
+# Development only: apply updates to 67% of a three-host demo inventory
 IDRAC_USERNAME=user IDRAC_PASSWORD=pass ansible-playbook \
   -i inventory/idrac_lab.ini \
   playbooks/idrac_update.yml \
@@ -102,7 +102,7 @@ idrac_update_serial: 1
 idrac_update_no_log: true
 ```
 
-`67%` is lab-only for three-host serial behavior testing. `idrac_update_no_log=false` is troubleshooting-only and must not remain in shared production templates.
+`67%` is development-only for three-host serial behavior testing. `idrac_update_no_log=false` is troubleshooting-only and must not remain in shared production templates.
 
 ### Firmware Apply Sequencing
 

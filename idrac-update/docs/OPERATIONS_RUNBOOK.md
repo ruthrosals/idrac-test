@@ -15,7 +15,7 @@ OS Collector is supported as `os_collector` and uses dotted numeric version comp
 
 ## Tested Runtime Baseline
 
-The current lab-tested baseline is:
+The current development-tested baseline is:
 
 - Ansible: `core 2.17.13`
 - Python: `3.10.0`
@@ -101,7 +101,7 @@ idrac_update_serial: "25%"
 
 Initial production deployments must use `idrac_update_serial: 1`. After the workflow has been proven in the target environment, production concurrency can be increased only through an approved change.
 
-`67%` is a lab-only batch setting used to prove serial behavior with three demo hosts. Do not use `67%` in shared production templates. Percentage values such as `25%` are for later controlled rollout only; for eight hosts, `25%` runs two hosts at a time.
+`67%` is a development-only batch setting used to prove serial behavior with three demo hosts. Do not use `67%` in shared production templates. Percentage values such as `25%` are for later controlled rollout only; for eight hosts, `25%` runs two hosts at a time.
 
 ## Report Locations
 

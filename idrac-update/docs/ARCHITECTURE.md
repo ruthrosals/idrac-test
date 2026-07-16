@@ -1,6 +1,6 @@
 # iDRAC Update Architecture
 
-The iDRAC update toolkit is designed for repeatable CLI and Semaphore execution across lab, staging, and production environments.
+The iDRAC update toolkit is designed for repeatable CLI and Semaphore execution across development, qa, and production environments.
 
 ## Repository Layout
 
